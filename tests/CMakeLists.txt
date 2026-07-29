@@ -6,9 +6,9 @@
 #
 # This listfile is the single place where the suite is wired to CTest.  It
 # defines one helper, libprov_add_test(), and uses it to register eight test
-# executables from seven sources -- two of those sources are compiled twice,
-# under different preprocessor and flag configurations, because neither pair of
-# contracts can be exhibited by one set of flags:
+# executables from seven sources -- one of those sources is compiled twice,
+# under different preprocessor and flag configurations, because the pair of
+# contracts it covers cannot be exhibited by one set of flags:
 #
 #   test_num_get            provnum_get_size_t() / provnum_get_int():
 #                           contract, boundaries, widths, signedness and
@@ -333,6 +333,15 @@ endif()
 # than the contract needs is scope creep, and it puts the interposer in the
 # path of stdio's own bookkeeping, which is the one thing that can make this
 # target non-deterministic.
+#
+# The cost of that choice is stated where it lands rather than left implicit.
+# With free unwrapped, no target in this suite observes a release POSITIVELY --
+# measured: err.c:82 reduced to a no-op still leaves all eight targets passing
+# -- so a release regression is caught by the opt-in
+# -fsanitize=address,undefined configuration README.md documents, where the
+# allocator is the witness by construction and the same mutation raises leak
+# reports in five of the eight targets.  tests/test_err_alloc.c and
+# tests/test_err_handle.c carry the full reasoning.
 #
 # Note what this target does NOT do: it does not compile a private copy of
 # err.c.  --wrap works at LINK time on undefined references, so the `malloc`

@@ -20,9 +20,9 @@ static sign_t paramsign(const OSSL_PARAM *param)
         return POSITIVE;
 
     size_t srcmsb = nativeendian() == BIG ? 0 : param->data_size - 1;
-
+    /* Same defect: {(void *)1,OCTET_STRING,4} SEGVd where -1 was owed. */
     return
-        param->data_type == OSSL_PARAM_UNSIGNED_INTEGER
+        param->data_type != OSSL_PARAM_INTEGER
         ? POSITIVE
         : (((unsigned char *)param->data)[srcmsb] & 0x80
            ? NEGATIVE

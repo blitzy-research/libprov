@@ -241,11 +241,19 @@ built, and no CTest machinery is touched.
     registered only on a POSIX host.
 -   `test_err_alloc` covers the out-of-memory paths, which no input can
     reach, by wrapping the allocator with `-Wl,--wrap=malloc`.  `free` is
-    deliberately left unwrapped -- release behaviour is asserted
-    behaviourally instead, by requiring a duplicate to be a distinct object
-    and the source handle to outlive a freed copy -- so this target
-    interposes on exactly one function and nothing in stdio is disturbed.
-    Registered only where the toolchain supplies GNU-`ld`-style `--wrap`.
+    deliberately left unwrapped, so this target interposes on exactly one
+    function and nothing in stdio is disturbed -- interposing on every
+    deallocation the process makes is the one thing that could make an
+    allocation-failure test non-deterministic.  What that leaves out is worth
+    knowing precisely: the suite requires a duplicate to be a distinct object
+    and the source handle to outlive a freed copy, which rules out a release
+    that let go of the source, but **no target run by the command above
+    observes a release positively** -- reduce `proverr_free_handle()` to a
+    no-op and all eight still pass.  That property is covered by the
+    sanitizer configuration described further down, where the allocator is
+    the witness by construction and the same change raises leak reports in
+    five of the eight targets.  Registered only where the toolchain supplies
+    GNU-`ld`-style `--wrap`.
 
 ### The two platform-conditional targets
 
@@ -317,6 +325,18 @@ branch in either file and exactly one unexecuted line -- `err.c:31`, the
 assertions are live, which is one of the branches the test sources name as
 unreachable by construction.
 
+Two things about those figures are worth knowing before you read a report.
+The paths above name the objects compiled into `libprov`, which is what six
+of the eight targets link; `err.c` is *additionally* compiled into
+`test_err_guards`, `test_err_guards_ndebug` and `test_err_death` with their
+own flags, and each of those has its own `.gcno` under
+`build-cov/tests/CMakeFiles/<target>.dir/__/`.  And on the `libprov` object
+`gcov` reports the five `__assert_fail` calls as never executed -- `Calls
+executed` sits at 54.55% -- because an assertion is only ever made to fail
+in `test_err_death`, whose children die on `SIGABRT` and so flush no coverage
+data at all.  That contract is asserted by that target's exit-status check,
+not by a coverage count, which is the point of having it.
+
 No percentage is set as a target.  What the suite aims at instead is every
 reachable branch, and the branches that are unreachable by construction are
 named, with the reason each is unreachable, in the test sources.  There is
@@ -340,15 +360,35 @@ what it is.  No target carries a sanitizer flag of its own, nothing writes to
 `CMAKE_C_FLAGS`, and `libprov` is never instrumented unless you ask for it
 here; the configuration above is the only way a sanitizer reaches any of it.
 
-It is also where a handful of properties the default suite cannot observe are
-checked, and the test sources name it for exactly that reason.  The default
-suite asserts what a caller can see -- return codes, output bytes,
-`return_size` -- while a memory property such as `num.c`'s zero-capacity
-clamp keeping an index inside its buffer, or the absence of a leak in the
-allocator test, is a property of the run rather than of a return value.  Each
-of those is covered here and, independently, by the mutation spot-checks the
-test sources describe: reverting the clamp is caught in this tree as a
-stack-buffer-underflow.
+It is also where the properties the default suite cannot observe are checked,
+and the test sources name it for exactly that reason.  The division is worth
+stating precisely, because it is narrower than it once was:
+
+-   **Reading a payload it had no business reading** is caught by the
+    default suite, not here.  The fixtures that must not be read hand
+    `num.c` an address in memory no mapping covers, so a read that must not
+    happen ends the test on a signal rather than quietly returning a
+    neighbouring byte.  Reverting the type gate in `paramsign()`, or either
+    half of its pre-validation guard, fails `test_num_get` under the
+    command above with no instrumentation at all.  What this tree adds is
+    the diagnosis: the same revert reports `SEGV ... in paramsign num.c:27`
+    with a stack trace instead of only a signal number.
+-   **`num.c`'s zero-capacity clamp** is caught by the default suite too,
+    and less firmly.  Reverting it makes `provnum_set_*` answer `1` where
+    `-2` is owed, which the existing assertions do detect -- measured on 200
+    runs of 200, at every optimisation level tried -- but only because a
+    byte inside the library function's own stack frame happens to say so,
+    and no fixture can control that byte.  Here it is unconditional:
+    AddressSanitizer's per-variable stack redzones report the revert as a
+    `stack-buffer-underflow` at `num.c:94 in provnum_copy` whatever that
+    byte would have said.
+-   **Whether `proverr_free_handle()` releases anything at all** is the one
+    property the default suite genuinely cannot see, and this is where it is
+    covered.  Reduce that function to a no-op and all eight targets still
+    pass above; in this tree LeakSanitizer reports leaks in five of them.
+
+Each of those was measured, and each is re-checked by the mutation
+spot-checks the test sources describe.
 
 ### Build artifacts
 

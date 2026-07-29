@@ -24,9 +24,11 @@
  * the release behaviour that IS observable is asserted behaviourally instead --
  * A-5 proves a duplicate is a distinct object from its source, and A-7 proves
  * the source outlives the freed copy -- while proverr_free_handle(NULL) is
- * covered by test_err_handle.c and test_err_guards.c.  Leak detection is a
- * memory property rather than a return-value property and belongs to the
- * opt-in `-fsanitize=address` configuration, not to a default-flags target.
+ * covered by test_err_handle.c and test_err_guards.c.  What that leaves
+ * unobserved is stated exactly under WHY free IS NOT WRAPPED below, and it is
+ * not only leaks: whether the release happens at all is a memory property
+ * rather than a return-value property, and it belongs to the opt-in
+ * `-fsanitize=address` configuration, not to a default-flags target.
  * calloc and realloc stay unwrapped for the same reason free does not need to
  * be: err.c never calls them, so wrapping more would be scope creep and could
  * destabilise stdio.
@@ -161,11 +163,24 @@
  * would buy one thing -- direct observation of err.c:82 -- at the cost of
  * putting this interposer in the path of every deallocation the process makes,
  * stdio's own included, which is the one thing that can make an
- * allocation-failure test non-deterministic.  Release behaviour is therefore
- * asserted BEHAVIOURALLY instead, and it is asserted: case A-5 requires the
- * duplicate to be a distinct object from its source, and case A-7 requires the
- * source to keep working after the duplicate has been freed, which a
- * proverr_free_handle() that released the wrong block could not satisfy.
+ * allocation-failure test non-deterministic; and the specification fixes this
+ * target's only link option at -Wl,--wrap=malloc, so it is not this file's
+ * choice to make either.
+ *
+ * WHAT IS ASSERTED INSTEAD, AND WHAT IS NOT.  Case A-5 requires the duplicate
+ * to be a distinct object from its source and case A-7 requires the source to
+ * keep working after the duplicate has been freed.  Together they rule out a
+ * proverr_free_handle() that released the SOURCE when it was handed the copy,
+ * and any release that left the source unusable.  They do NOT rule out a
+ * release that does nothing at all, nor one that lets go of some unrelated
+ * block: neither disturbs the source, so neither changes anything A-5 or A-7
+ * can see.  MEASURED, so that the limit is a fact and not a hedge: with
+ * err.c:82 reduced to a no-op the whole mandatory suite still reports 8 of 8
+ * passing, while the same mutation under the opt-in
+ * -fsanitize=address,undefined configuration documented in README.md makes
+ * LeakSanitizer report detected memory leaks in five of the eight targets.
+ * That configuration is where the positive release property is verified, with
+ * the allocator as witness by construction; this file does not claim it.
  * proverr_free_handle(NULL) is covered by tests/test_err_handle.c and
  * tests/test_err_guards.c, neither of which needs an interposer to do it.
  */
@@ -1037,10 +1052,15 @@ int main(void)
    * event during the run would make every per-case attribution above unsound,
    * and that must be reported rather than absorbed.
    *
-   * Leaks are NOT asserted here.  Only malloc is wrapped, so this file cannot
-   * see a release; every handle a case builds is freed by that case, and the
-   * memory property is verified by the opt-in -fsanitize=address,undefined
-   * configuration documented in README.md, which reports clean.
+   * RELEASE IS NOT ASSERTED HERE, and neither are leaks.  Only malloc is
+   * wrapped, so this file cannot see a free at all: every handle a case builds
+   * is released by that case, but nothing here could tell a release that
+   * happened from one that did not.  The property is verified by the opt-in
+   * -fsanitize=address,undefined configuration documented in README.md, which
+   * reports clean on this suite and reports leaks in five of the eight targets
+   * the moment err.c:82 stops releasing.  Both halves of that were measured;
+   * see WHY free IS NOT WRAPPED at the top of this file for the reasoning and
+   * for what A-5 and A-7 do and do not establish.
    */
   TEST_ASSERT_INT_EQ("every interception either supplied a block or was forced"
                      " to fail",

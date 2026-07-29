@@ -340,9 +340,13 @@ static size_t set_size_t_from_msb_first(const unsigned char *msb_first,
  * THE ZERO-CAPACITY CLAMP: WHAT OBSERVES A REGRESSION, AND WHAT CANNOT
  * ---------------------------------------------------------------------------
  * Read this before adding a case that hopes to catch a regression of the clamp
- * at num.c:91.  The limit stated below is a property of WHERE THE MEMORY LIVES
- * and not of how hard a test tries, which is why closing it took a second
- * compilation of this file rather than another fixture.
+ * at num.c:91.  The suite DOES catch one, by the contract assertions named
+ * below; what it cannot do is guarantee that it always will, and the reason is
+ * a property of WHERE THE MEMORY LIVES rather than of how hard a test tries.
+ * No fixture closes that last gap -- not the poisoned payload that closes the
+ * corresponding gap in paramsign(), for the reason given under WHY NO FIXTURE
+ * IN THIS FILE CAN CONTROL THAT BYTE -- and the only thing that does is a build
+ * configuration, described at the end.
  *
  * WHAT A REVERT DOES.  Removing "|| dest.size == 0" leaves the strip loop's
  * bound `end` at 0, so the loop at num.c:92-96 keeps going while src.size is
@@ -363,9 +367,15 @@ static size_t set_size_t_from_msb_first(const unsigned char *msb_first,
  * is not the test's.  num.c:161 builds the source descriptor over `&src` -- the
  * value parameter of provnum_set_size_t() or provnum_set_int() -- so the byte the
  * regressed loop reads is at ((unsigned char *)&src)[-1], inside the library
- * function's OWN stack frame.  A test owns its destination buffer and could put a
- * protected page against either end of it; it does not own the callee's frame and
- * cannot place anything against that.  Attempts that were tried and rejected, so
+ * function's OWN stack frame.  A test controls only the memory it supplies; it
+ * does not own the callee's frame and cannot put anything against it.  That is
+ * also precisely why param_util.h's poisoned payload does not transfer here.  It
+ * works for paramsign() because there the address that must not be read is one
+ * the TEST hands over, so the test can make it unreadable; here the address is
+ * one the CALLEE derives from its own parameter, and nothing passed in can reach
+ * it.  A poisoned DESTINATION does not help either: with a declared capacity of
+ * zero the destination is never read or written on any path, so its
+ * accessibility is not observable.  Attempts that were tried and rejected, so
  * they are not tried again: painting the callee's frame from a noinline scratch
  * function (nonportable, and it makes the verdict depend on whether the compiler
  * kept that frame), sigaltstack and makecontext (the ABI's stack alignment stops
@@ -382,14 +392,25 @@ static size_t set_size_t_from_msb_first(const unsigned char *msb_first,
  * cannot pin is whether a particular build arrived at it by reading a byte it
  * had no business reading.
  *
- * SO A REVERTED CLAMP CHANGES THE ANSWER ONLY IF THAT ONE BYTE SAYS SO.
- * MEASURED here: a reverted num.c fails those assertions -- returning 1 instead
- * of -2 -- on 200 runs out of 200, because the byte below the frame on this host
- * happens to have its high bit clear.  That is a fact about this host and NOT a
- * guarantee; a measurement is not a mechanism, and this file does not treat it
- * as one.
+ * SO A REVERTED CLAMP CHANGES THE ANSWER ONLY IF THAT ONE BYTE SAYS SO -- and
+ * measurement says it does, consistently.  MEASURED: a num.c with the clamp
+ * reverted fails those assertions, returning 1 where -2 is owed, on 200 runs out
+ * of 200 of the binary the mandated command builds; and it fails them at every
+ * optimisation level tried -- -O0, -O1, -O2, -O3, -Os and -Og -- with and
+ * without the stack protector, four assertions failing at the lower levels and
+ * at least one at every level.  The byte below `src` has its high bit clear
+ * across all of them.  So the revert is DETECTED, by the ordinary contract
+ * assertions, in the default build, with no instrumentation.
  *
- * *** THE MECHANISM THAT DOES DECIDE IT IS NOT A FIXTURE AT ALL. ***
+ * What that is not, is a guarantee, and this file does not upgrade it into one.
+ * A conforming implementation could put a byte with its high bit set there and
+ * the regressed library would then answer PROVNUM_E_TOOBIG by accident, passing
+ * every assertion.  Detection here therefore rests on a fact about generated
+ * code rather than on anything the language promises, which is a weaker footing
+ * than the poisoned-payload cases in test_num_get.c stand on and is stated as
+ * such.  It is also why the sanitizer configuration below is not redundant.
+ *
+ * *** WHAT WOULD TURN THAT INTO A GUARANTEE IS NOT A FIXTURE AT ALL. ***
  *
  * The access is out of bounds of a VARIABLE while remaining, in general, inside
  * the FUNCTION'S FRAME -- the setter's frame also holds `endian`, `destnd`,
@@ -407,9 +428,12 @@ static size_t set_size_t_from_msb_first(const unsigned char *msb_first,
  * -DCMAKE_C_FLAGS="-fsanitize=address,undefined -g -fno-omit-frame-pointer",
  * which instruments num.c along with everything else, and run this suite in it
  * together with the mutation spot-check that reverts the clamp.  It is
- * deliberately NOT wired into the default build: the mandated command must stay
- * byte for byte what it is, with no -D flag, no CMAKE_C_FLAGS and no sanitizer
- * on libprov or on any target.
+ * deliberately NOT wired into the default build, and that is a requirement
+ * rather than a preference: the specification the suite is built to excludes
+ * enabling sanitizers, coverage instrumentation or any additional flag by
+ * default, and fixes the registered target list at eight, so the mandated
+ * command stays byte for byte what it is -- no -D flag, no CMAKE_C_FLAGS, no
+ * sanitizer on libprov or on any target, and no ninth target carrying one.
  *
  * ONE COROLLARY WORTH KNOWING, asserted by the third zero-capacity case below.
  * The loop compares the out-of-bounds byte's high bit against src.sign's, and
@@ -1444,17 +1468,23 @@ static int test_set_errors(void)
          * WHAT THIS CASE DOES AND DOES NOT ESTABLISH, stated precisely because a
          * regression guard that only sometimes fires is worse than a stated
          * limit.  It pins the CONTRACT -- the exact code, the exact return_size
-         * and an untouched buffer -- on every host and in every build.  It
-         * detects a REVERTED clamp only if the revert changes that answer, which
-         * is decided by a byte inside the library function's own stack frame that
-         * no fixture here can control; measured on this host it does, 200 runs
-         * out of 200, but that is a measurement and not a mechanism.
+         * and an untouched buffer -- on every host and in every build.  It also
+         * DOES detect a reverted clamp: measured against the binary the mandated
+         * command builds, the revert returns 1 here instead of -2 on 200 runs out
+         * of 200, and at every optimisation level tried.  What is not guaranteed
+         * is that it always will, because the revert only changes the answer if
+         * a byte inside the library function's own stack frame says so, and no
+         * fixture here can control that byte.  So this is a real regression
+         * guard resting on generated code rather than on the language -- weaker
+         * footing than the poisoned-payload guards in test_num_get.c, and said
+         * plainly rather than rounded up.
          *
-         * WHAT DOES DECIDE IT is the opt-in -fsanitize=address,undefined
-         * configuration documented in README.md, run alongside the mutation
-         * spot-check that reverts the clamp: AddressSanitizer's per-variable
-         * stack redzones see the under-read itself, whatever answer the byte
-         * would have produced.  The comment headed "THE ZERO-CAPACITY CLAMP:
+         * WHAT WOULD MAKE IT UNCONDITIONAL is the opt-in
+         * -fsanitize=address,undefined configuration documented in README.md,
+         * run alongside the mutation spot-check that reverts the clamp:
+         * AddressSanitizer's per-variable stack redzones see the under-read
+         * itself, whatever answer the byte would have produced.  The comment
+         * headed "THE ZERO-CAPACITY CLAMP:
          * WHAT OBSERVES A REGRESSION, AND WHAT CANNOT" gives the reasoning and
          * the alternatives that were tried and rejected, and explains why
          * per-variable instrumentation of num.c is the only thing that can see

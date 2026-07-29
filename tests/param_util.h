@@ -21,6 +21,10 @@
  * and its expectation are laid out by the same rule so the two cannot
  * disagree.  Widths derive from sizeof and CHAR_BIT.  Null-data and zero-size
  * fixtures are typed OSSL_PARAM_INTEGER; param_build_null_data() says why.
+ * One fixture withholds its payload instead of supplying one:
+ * param_build_poisoned() hands over an address that cannot be read, so a
+ * payload the library was never entitled to touch becomes a trap rather than
+ * a silence.
  *
  * ALIASING IS A GUARANTEE HERE: param_put_msb_first(buf, n, buf, n) and
  * param_snapshot(&p, &p) are reachable calls, so every helper answers the same
@@ -482,10 +486,11 @@ static PARAMUTIL_MAYBE_UNUSED void param_build_integer(OSSL_PARAM *param,
 
 /*
  * An unsigned-integer parameter over a caller-owned buffer.
- * OSSL_PARAM_UNSIGNED_INTEGER takes paramsign()'s unsigned short-circuit
- * straight to positive: right for magnitude fixtures -- an all-bits-set
- * buffer means SIZE_MAX here and -1 under OSSL_PARAM_INTEGER -- wrong for
- * anything that must reach past that short circuit.
+ * OSSL_PARAM_UNSIGNED_INTEGER takes paramsign()'s type gate straight to
+ * positive, as does every type except OSSL_PARAM_INTEGER, which alone reaches
+ * the payload read: right for magnitude fixtures -- an all-bits-set buffer
+ * means SIZE_MAX here and -1 under OSSL_PARAM_INTEGER -- wrong for anything
+ * that must reach past that gate.
  */
 static PARAMUTIL_MAYBE_UNUSED void param_build_unsigned(OSSL_PARAM *param,
                                                         void *data,
@@ -499,9 +504,10 @@ static PARAMUTIL_MAYBE_UNUSED void param_build_unsigned(OSSL_PARAM *param,
  * for the null-source contract, whose documented answer is PROVNUM_E_NULL.
  *
  * USE OSSL_PARAM_INTEGER HERE.  paramsign() returns positive IMMEDIATELY for
- * an unsigned data type, so a null-data fixture typed
- * OSSL_PARAM_UNSIGNED_INTEGER exercises the short circuit and can detect
- * nothing beyond it; typed OSSL_PARAM_INTEGER it does reach that code.
+ * every data type but that one, so a null-data fixture typed
+ * OSSL_PARAM_UNSIGNED_INTEGER -- or any other non-integer type -- exercises
+ * the type gate and can detect nothing beyond it; typed OSSL_PARAM_INTEGER it
+ * does reach that code.
  * data_type stays a parameter because pairing a null buffer with a
  * non-integer type pins which guard runs first: for OSSL_PARAM_OCTET_STRING
  * the answer is PROVNUM_E_WRONG_TYPE.
@@ -544,6 +550,67 @@ static PARAMUTIL_MAYBE_UNUSED int param_build_empty(OSSL_PARAM *param,
 
     param_build(param, data_type, data, 0);
     return 1;
+}
+
+/*
+ * A payload address that is NOT null and that NOTHING may read.
+ *
+ * Every other fixture in this header hands the library a buffer it is welcome
+ * to read, which makes "the library did not read the payload" unobservable:
+ * an implementation that reads a byte it had no business reading returns the
+ * same answer as one that never looked.  A poisoned payload turns that
+ * silence into a signal.  Two contracts in num.c are exactly of that shape --
+ * a wrong data type must be REJECTED before the payload is consulted, and a
+ * declared size of zero must take the empty-source shortcut before the
+ * payload is consulted -- and each is pinned by handing the function a
+ * descriptor whose data pointer cannot survive being dereferenced.
+ *
+ * Why address 1 cannot be read: a hosted POSIX implementation reserves the
+ * lowest addresses and never maps them (on Linux the floor is
+ * vm.mmap_min_addr, 65536 by default), so 1 lies in a region no object can
+ * occupy and no mapping can cover.  A read through it traps.  The wrapped
+ * form traps too, which is what makes the zero-size case work: an
+ * implementation that computed data_size - 1 on a declared size of zero would
+ * index SIZE_MAX, and (unsigned char *)1 + SIZE_MAX is address 0 -- also
+ * unmapped, also a trap.  Both mistakes land in the same unmappable region
+ * rather than on some innocent neighbouring object whose bytes would have
+ * been read and silently believed.
+ *
+ * Why THIS FILE contains no undefined behaviour: converting an integer to a
+ * pointer is implementation-defined, not undefined (C99 6.3.2.3p5), and the
+ * suite only ever stores the result in a descriptor and compares it.  It is
+ * never dereferenced here, and correct library code never dereferences it
+ * either -- both contracts above answer before the payload is reached.  The
+ * only way this pointer is followed is a library that violates one of them,
+ * which is precisely the defect being detected.  param_snapshot() and
+ * param_identical() stay usable, reading the DESCRIPTOR and not the payload.
+ *
+ * The honest limit: this is a trap, not a proof.  On a hypothetical host that
+ * mapped its lowest page the read would succeed and a broken library would go
+ * unnoticed -- the oracle would weaken.  It can never invert: correct code
+ * does not read the payload, so this fixture cannot fail a correct
+ * implementation, and there is no configuration in which a passing verdict
+ * here is wrong.  That asymmetry is why it is safe in the mandatory suite,
+ * needing no extra target, no fault injection and no sanitizer.
+ */
+#define PARAM_POISON_DATA ((void *)1)
+
+/*
+ * A parameter whose declared size is the caller's but whose payload is
+ * unreadable.  data_type stays a parameter because both interesting shapes
+ * need it: a non-integer type with a non-zero size pins wrong-type rejection
+ * ahead of any payload read, and OSSL_PARAM_INTEGER with a size of zero pins
+ * the empty-source shortcut ahead of any payload read.  Prefer this over
+ * param_build_null_data() wherever the question is "was the payload read?"
+ * rather than "was a null payload rejected?": a null pointer is also the
+ * value num.c's own guard tests, so a null-data fixture cannot separate a
+ * guard that returns early from one that merely happens not to fault.
+ */
+static PARAMUTIL_MAYBE_UNUSED void
+param_build_poisoned(OSSL_PARAM *param, unsigned int data_type,
+                     size_t data_size)
+{
+    param_build(param, data_type, PARAM_POISON_DATA, data_size);
 }
 
 /*

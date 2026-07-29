@@ -34,10 +34,11 @@
  *
  * Do not "tidy" the fixtures in test_get_null_and_empty() to
  * OSSL_PARAM_UNSIGNED_INTEGER.  paramsign() is called from the argument list
- * at num.c:147, so it runs BEFORE provnum_copy() validates anything, and at
- * num.c:25-26 it returns POSITIVE immediately for OSSL_PARAM_UNSIGNED_INTEGER
- * without ever reaching the source dereference at num.c:27.  An
- * unsigned-typed null-data fixture is therefore STRUCTURALLY INCAPABLE of
+ * at num.c:147, so it runs BEFORE provnum_copy() validates anything, and the
+ * type gate at num.c:25-26 returns POSITIVE immediately for EVERY data type
+ * except OSSL_PARAM_INTEGER, which alone reaches the source dereference at
+ * num.c:27.  A null-data fixture typed OSSL_PARAM_UNSIGNED_INTEGER -- or typed
+ * any other non-integer type -- is therefore STRUCTURALLY INCAPABLE of
  * detecting a missing null check, however correct its expected return code
  * looks.  Both spellings are kept below, the signed one first and labelled,
  * because only one of them can see such a bug.
@@ -66,17 +67,29 @@
  * that fits and the smallest that does not -- so an off-by-one in either
  * direction fails.
  *
- * MEMORY PROPERTIES ARE NOT OBSERVED HERE, and that is deliberate.  A few
- * plausible single-token defects in num.c change no return code and no
- * destination value for any input: their whole effect is an access one byte
- * outside an object, which an ordinary build answers with whatever byte
- * happens to be adjacent.  MEASURED: with the zero-size half of paramsign()'s
- * guard removed, every case in this file still passed.  Catching that class is
- * a MEMORY property rather than a return-value property, so it belongs to the
- * opt-in -fsanitize=address,undefined configuration documented in README.md
- * and to the mutation spot-checks it is run alongside -- not to a default-flags
- * target, because the mandated command must stay exactly what it is with no
- * instrumentation added to it.
+ * MEMORY PROPERTIES ARE OBSERVED HERE BY CONSTRUCTION, NOT BY INSTRUMENTATION.
+ * A few plausible single-token defects in num.c change no return code and no
+ * destination value for any input whose payload the library is free to read:
+ * their whole effect is an access one byte outside an object, which an ordinary
+ * build answers with whatever byte happens to be adjacent.  MEASURED against
+ * readable fixtures alone: with the zero-size half of paramsign()'s guard
+ * removed, every case in this file still passed.  The answer is not to
+ * instrument the mandated command but to stop handing over a payload the
+ * library is entitled to read: param_util.h's param_build_poisoned() supplies
+ * a descriptor whose data pointer lies where no mapping can cover it, so an
+ * access that must not happen becomes a signal instead of a neighbour's byte.
+ * MEASURED with those fixtures in place, in the DEFAULT build with no
+ * instrumentation: reverting the type gate at num.c:25 terminates this test on
+ * a signal, so does reverting either half of the guard at num.c:19-20, and
+ * reverting the padding offset at num.c:118 produces eight value mismatches.
+ *
+ * The opt-in -fsanitize=address,undefined configuration documented in
+ * README.md stays worth running, and is run alongside the mutation
+ * spot-checks, for what it ADDS rather than for what it replaces: it names the
+ * file and line of an offending access instead of only reporting a signal, it
+ * sees the same read through the ordinary readable fixtures too, and it would
+ * still catch a host that mapped the region these fixtures rely on being
+ * unmapped.
  *
  * Exactly one behaviour is deliberately NOT asserted, marked "CLASS C" in
  * test_get_edge_cases().  It is not a gap and must not be "completed" by
@@ -1124,22 +1137,37 @@ static int test_get_wrong_types(void)
         const char *rc_label;
         const char *untouched_label;
         const char *param_label;
+        const char *poison_rc_label;
+        const char *poison_untouched_label;
+        const char *poison_param_label;
     } wrong[] = {
         { OSSL_PARAM_REAL,
-          "REAL rc", "REAL untouched", "REAL param" },
+          "REAL rc", "REAL untouched", "REAL param",
+          "REAL poisoned rc", "REAL poisoned untouched",
+          "REAL poisoned param" },
         { OSSL_PARAM_UTF8_STRING,
-          "UTF8_STRING rc", "UTF8_STRING untouched", "UTF8_STRING param" },
+          "UTF8_STRING rc", "UTF8_STRING untouched", "UTF8_STRING param",
+          "UTF8_STRING poisoned rc", "UTF8_STRING poisoned untouched",
+          "UTF8_STRING poisoned param" },
         { OSSL_PARAM_OCTET_STRING,
-          "OCTET_STRING rc", "OCTET_STRING untouched", "OCTET_STRING param" },
+          "OCTET_STRING rc", "OCTET_STRING untouched", "OCTET_STRING param",
+          "OCTET_STRING poisoned rc", "OCTET_STRING poisoned untouched",
+          "OCTET_STRING poisoned param" },
         { OSSL_PARAM_UTF8_PTR,
-          "UTF8_PTR rc", "UTF8_PTR untouched", "UTF8_PTR param" },
+          "UTF8_PTR rc", "UTF8_PTR untouched", "UTF8_PTR param",
+          "UTF8_PTR poisoned rc", "UTF8_PTR poisoned untouched",
+          "UTF8_PTR poisoned param" },
         { OSSL_PARAM_OCTET_PTR,
-          "OCTET_PTR rc", "OCTET_PTR untouched", "OCTET_PTR param" }
+          "OCTET_PTR rc", "OCTET_PTR untouched", "OCTET_PTR param",
+          "OCTET_PTR poisoned rc", "OCTET_PTR poisoned untouched",
+          "OCTET_PTR poisoned param" }
     };
     /*
      * One buffer serves every iteration: the bytes are irrelevant to a
-     * rejection that happens before they are read, and building it once means
-     * its verdict is asserted once rather than five identical times.  It holds
+     * rejection that happens before they are read -- a claim this loop assumes
+     * and the poisoned repetition after it is what actually proves -- and
+     * building it once means its verdict is asserted once rather than five
+     * identical times.  It holds
      * a pattern that is neither the sentinel nor a plausible result, so a
      * conversion that wrongly went ahead could not accidentally produce the
      * value the destination already had.
@@ -1168,6 +1196,50 @@ static int test_get_wrong_types(void)
         ret &= test;
     }
 
+    /*
+     * WHEN the rejection happens, not merely that it happens.
+     *
+     * The loop above proves each of the five types is refused.  It cannot
+     * prove the refusal came BEFORE the payload was consulted, because the
+     * payload it supplies is a readable buffer: an implementation that read a
+     * byte of it on the way to the same PROVNUM_E_WRONG_TYPE returns exactly
+     * what a correct one returns, and the reading is invisible.  That is not a
+     * hypothetical.  paramsign() runs at num.c:147, inside the initialiser of
+     * the descriptor handed to provnum_copy(), so it executes BEFORE the type
+     * check at num.c:58-62 reached only afterwards -- and until num.c:25 was
+     * gated on OSSL_PARAM_INTEGER, every non-unsigned type reached the payload
+     * read at num.c:27 with nothing having validated it.  A caller passing a
+     * descriptor that names an OSSL_PARAM_OCTET_STRING whose data it has not
+     * made readable is owed PROVNUM_E_WRONG_TYPE, not a fault.
+     *
+     * Repeating the five types with a payload that cannot be read turns the
+     * ordering into an observable.  Correct code answers -1 without following
+     * the pointer; code that reads first traps, and CTest reports the signal
+     * as a failure of this test.  param_util.h's PARAM_POISON_DATA explains
+     * why the address is guaranteed unreadable, why forming it is not
+     * undefined behaviour here, and why the oracle can only weaken and never
+     * invert.  No sanitizer, no extra target and no fault injection is
+     * involved: this runs in the mandatory suite.
+     */
+    for (k = 0; k < sizeof wrong / sizeof wrong[0]; k++) {
+        OSSL_PARAM param;
+        size_t dest = param_sentinel_size_t();
+        struct size_t_result got;
+
+        param_build_poisoned(&param, wrong[k].data_type, sizeof src);
+
+        got = call_get_size_t(&dest, &param);
+        TEST_ASSERT_INT_EQ(wrong[k].poison_rc_label, got.rc,
+                           PROVNUM_E_WRONG_TYPE);
+        ret &= test;
+        TEST_ASSERT_SIZE_EQ(wrong[k].poison_untouched_label, got.value,
+                            param_sentinel_size_t());
+        ret &= test;
+        TEST_ASSERT_INT_EQ(wrong[k].poison_param_label, got.param_unchanged,
+                           1);
+        ret &= test;
+    }
+
     {
         /*
          * The same rejection through the other instantiation, proving the
@@ -1193,6 +1265,32 @@ static int test_get_wrong_types(void)
         ret &= test;
     }
 
+    {
+        /*
+         * And the ordering through that other instantiation too, so the gate
+         * is pinned on both generated functions rather than on the one whose
+         * destination happens to be unsigned.  OSSL_PARAM_OCTET_STRING is the
+         * type whose descriptor a real provider is most likely to hand over
+         * with a payload it has not yet populated.
+         */
+        OSSL_PARAM param;
+        int dest = param_sentinel_int();
+        struct int_result got;
+
+        param_build_poisoned(&param, OSSL_PARAM_OCTET_STRING, sizeof src);
+
+        got = call_get_int(&dest, &param);
+        TEST_ASSERT_INT_EQ("OCTET_STRING->int poisoned rc", got.rc,
+                           PROVNUM_E_WRONG_TYPE);
+        ret &= test;
+        TEST_ASSERT_INT_EQ("OCTET_STRING->int poisoned untouched", got.value,
+                           param_sentinel_int());
+        ret &= test;
+        TEST_ASSERT_INT_EQ("OCTET_STRING->int poisoned param",
+                           got.param_unchanged, 1);
+        ret &= test;
+    }
+
     return ret;
 }
 
@@ -1203,15 +1301,17 @@ static int test_get_wrong_types(void)
  *
  * provnum_get_size_t() and provnum_get_int() both compute paramsign(param) in
  * the argument list at num.c:147, so paramsign() runs BEFORE provnum_copy()
- * has validated anything at all.  Inside it, num.c:25-26 returns POSITIVE the
- * moment the data type is OSSL_PARAM_UNSIGNED_INTEGER, and only a source of
- * any other type reaches the dereference at num.c:27 -- indexed with data_size
- * - 1, which for a size of zero wraps and reads before the buffer.
+ * has validated anything at all.  Inside it, the type gate at num.c:25-26
+ * returns POSITIVE the moment the data type is anything but
+ * OSSL_PARAM_INTEGER, and ONLY OSSL_PARAM_INTEGER reaches the dereference at
+ * num.c:27 -- indexed with data_size - 1, which for a size of zero wraps and
+ * reads before the buffer.
  *
  * The consequence is the reason for this warning: a null-data or zero-size
- * fixture typed OSSL_PARAM_UNSIGNED_INTEGER never drives execution past that
- * short circuit, so it CANNOT detect a missing guard, no matter how right its
- * expected return code looks.  The signed cases therefore come first, are
+ * fixture typed OSSL_PARAM_UNSIGNED_INTEGER, or typed any other non-integer
+ * type, never drives execution past that gate, so it CANNOT detect a missing
+ * guard, no matter how right its expected return code looks.  The signed cases
+ * therefore come first, are
  * labelled, and are the ones that matter; an unsigned-typed null-data case is
  * kept as a companion, because PROVNUM_E_NULL is genuinely its documented
  * answer too, but it is not a substitute.  Retyping the signed cases to
@@ -1228,6 +1328,17 @@ static int test_get_wrong_types(void)
  * on every path that can produce it, so no assertion could distinguish
  * POSITIVE from NEGATIVE and none is written; this is an equivalence, not a
  * gap.
+ *
+ * The same argument covers the type gate at num.c:25-26, and it is why that
+ * gate is safe as well as necessary.  Every input it answers for carries a
+ * data type provnum_copy() rejects at num.c:58-62, which is upstream of all
+ * four readers of src.sign, so gating the dereference cannot change what any
+ * defined input converts to -- only whether an undefined read happens on the
+ * way.  Confirmed by construction and by measurement: across the whole
+ * boundary matrix of data types, fill patterns, widths and destinations, and
+ * across every assertion in this file and in test_num_set.c, the gate changes
+ * no answer.  What it does change is the wrong-type group above, where a
+ * payload that must not be read is now provably not read.
  */
 static int test_get_null_and_empty(void)
 {
@@ -1313,13 +1424,17 @@ static int test_get_null_and_empty(void)
          *
          * This is also the zero-size half of the pre-validation dereference:
          * with the guard at num.c:19-20 removed, paramsign() computes
-         * data_size - 1, wraps, and reads the byte BEFORE this buffer.  The
-         * buffer is a separate automatic object sized exactly to the fixture
-         * precisely so that the opt-in -fsanitize=address configuration can see
-         * that read.  MEASURED: in an ordinary build, reintroducing the defect
-         * left this case -- and every other case in the file -- passing, which
-         * is why the memory property is verified under the sanitizer rather than
-         * claimed here.
+         * data_size - 1, wraps, and reads the byte BEFORE this buffer.  THIS
+         * fixture cannot see that read.  The byte before an automatic object is
+         * ordinary readable memory, so the mutant returns exactly the success
+         * asserted here and nothing distinguishes it.  MEASURED: reintroducing
+         * the defect left this case, and every other case in the file, passing.
+         * The poisoned repetition immediately below is what closes it, by
+         * making that same read land in memory no mapping covers instead of on
+         * a neighbour's byte; the opt-in -fsanitize=address configuration
+         * remains a second, independent witness that additionally names the
+         * offending line.  The buffer stays a separate automatic object sized
+         * exactly to the fixture so that witness keeps working.
          */
         unsigned char src[sizeof(int)];
         OSSL_PARAM param;
@@ -1354,6 +1469,58 @@ static int test_get_null_and_empty(void)
         TEST_ASSERT_INT_EQ("U[0]->int rc", got.rc, 1); ret &= test;
         TEST_ASSERT_INT_EQ("U[0]->int value", got.value, 0); ret &= test;
         TEST_ASSERT_INT_EQ("U[0]->int param", got.param_unchanged, 1);
+        ret &= test;
+    }
+
+    {
+        /*
+         * The empty source again, with a payload that CANNOT be read: the same
+         * documented answer, now conditional on the payload never being
+         * touched.
+         *
+         * The type MUST be OSSL_PARAM_INTEGER.  Under any other type
+         * paramsign() answers at num.c:25 without looking, so the fixture
+         * would prove only that the type gate works -- which the wrong-type
+         * group already proves -- and would pass whether or not the zero-size
+         * guard at num.c:19-20 exists.  Typed OSSL_PARAM_INTEGER the guard is
+         * the ONLY thing standing between the call and the payload, so its
+         * removal is not a matter of degree: paramsign() would index
+         * data_size - 1, which for a declared size of zero is SIZE_MAX, and
+         * PARAM_POISON_DATA + SIZE_MAX is address 0.  The read traps, the
+         * process dies on a signal, and CTest fails this test.  That is the
+         * deterministic default-build oracle the readable-buffer case above
+         * cannot be.
+         *
+         * Both instantiations are exercised because the guard lives in the
+         * shared paramsign() at num.c:16-30 and a fix applied to only one
+         * generated function is a fix that was never applied at all.
+         */
+        OSSL_PARAM param;
+        size_t dest_sz = param_sentinel_size_t();
+        int dest_i = param_sentinel_int();
+        struct size_t_result got_sz;
+        struct int_result got_i;
+
+        param_build_poisoned(&param, OSSL_PARAM_INTEGER, 0);
+
+        got_sz = call_get_size_t(&dest_sz, &param);
+        TEST_ASSERT_INT_EQ("I[0] poisoned->size_t rc", got_sz.rc, 1);
+        ret &= test;
+        TEST_ASSERT_SIZE_EQ("I[0] poisoned->size_t value", got_sz.value,
+                            (size_t)0);
+        ret &= test;
+        TEST_ASSERT_INT_EQ("I[0] poisoned->size_t param",
+                           got_sz.param_unchanged, 1);
+        ret &= test;
+
+        param_build_poisoned(&param, OSSL_PARAM_INTEGER, 0);
+
+        got_i = call_get_int(&dest_i, &param);
+        TEST_ASSERT_INT_EQ("I[0] poisoned->int rc", got_i.rc, 1); ret &= test;
+        TEST_ASSERT_INT_EQ("I[0] poisoned->int value", got_i.value, 0);
+        ret &= test;
+        TEST_ASSERT_INT_EQ("I[0] poisoned->int param", got_i.param_unchanged,
+                           1);
         ret &= test;
     }
 
@@ -2255,8 +2422,9 @@ static int test_get_precedence(void)
          * reads through a null pointer.
          *
          * THE TYPE MUST BE OSSL_PARAM_INTEGER, NEVER THE UNSIGNED TYPE.
-         * paramsign() returns POSITIVE for an unsigned source before it looks
-         * at anything (num.c:27), so an unsigned fixture never drives
+         * paramsign() returns POSITIVE at its type gate (num.c:25-26) for
+         * every data type but that one, without looking at the payload at
+         * num.c:27, so an unsigned fixture never drives
          * execution into the branch that indexes the buffer and would be blind
          * to the whole null-dereference class.  With the signed type this case
          * also exercises the pre-validation guard at the head of paramsign()

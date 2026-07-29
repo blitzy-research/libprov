@@ -625,23 +625,37 @@ static int test_dup_handle(void)
  * The delta alone would be satisfied if both sides were zero, which is exactly
  * what a free that also reset the observation state would produce.
  *
- * WHAT THIS CASE CANNOT REACH, AND WHERE IT IS REACHED INSTEAD.  Everything
+ * WHAT THIS CASE CANNOT REACH, AND EXACTLY WHERE MATTERS STAND.  Everything
  * asserted here is about what proverr_free_handle() must NOT do.  The positive
  * fact -- that it releases the block, that it releases exactly the block it
  * was given, and that it releases it exactly once -- is invisible from this
  * translation unit: the function returns nothing, writes through nothing and
  * calls no stub, so a body deleted outright would satisfy every assertion
- * below.  Proving the release therefore needs the allocator itself to be the
- * witness, which needs link-time interposition, which is a per-target link
- * option and not something a source file can arrange for itself.  That is
- * exactly what tests/test_err_alloc.c is registered with, and its cases A-9 to
- * A-12 assert the release positively: pointer identity of the block handed to
- * free, a call count of exactly one per release, the source surviving while
- * its duplicate's block goes away, and a ledger of blocks supplied against
- * blocks released that must close at zero.  Nothing here is redundant with
- * those -- the two halves are complementary, and this comment exists so that a
- * reader who notices the gap can find where it is closed rather than
- * concluding it is open.
+ * below.  MEASURED rather than supposed: with err.c:82 reduced to a no-op the
+ * whole mandatory suite still reports 8 of 8 passing.
+ *
+ * NO OTHER TARGET IN THE MANDATORY SUITE CLOSES THAT GAP, and this comment says
+ * so rather than pointing at one that does not.  tests/test_err_alloc.c gets
+ * closest and still does not reach it: its case A-5 requires a duplicate to be
+ * a distinct object from its source and its case A-7 requires the source to
+ * keep working after the duplicate has been freed, which together rule out a
+ * release that let go of the SOURCE or left it unusable -- but not one that did
+ * nothing, and not one that let go of some unrelated block, because neither
+ * disturbs the source.  Observing a release positively needs the ALLOCATOR to
+ * be the witness, which needs link-time interposition on free().  That target
+ * interposes on malloc alone, deliberately: wrapping free would put the
+ * interposer in the path of every deallocation the process makes, stdio's
+ * included, which is the one thing that can make an allocation-failure test
+ * non-deterministic, and the specification fixes that target's only link option
+ * at -Wl,--wrap=malloc.
+ *
+ * WHERE IT IS OBSERVED is the opt-in -fsanitize=address,undefined configuration
+ * documented in README.md, where the allocator is the witness by construction.
+ * MEASURED: the same no-op mutation makes LeakSanitizer report detected memory
+ * leaks in five of the eight targets, this one among them.  So the residual
+ * limit is exact and worth stating plainly -- a release regression is caught by
+ * a documented configuration, not by the default one -- and nothing here is
+ * redundant with what that configuration adds.
  */
 static int test_free_handle(void)
 {
