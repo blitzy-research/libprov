@@ -873,7 +873,7 @@ param_guard_at_high(const struct param_guard *guard, size_t width)
  * stepping ONE PLACE BEYOND the most significant byte, and which direction that
  * is depends on byte order:
  *
- *   LITTLE: srcmsb is size - 1 and srcmsb2lsb is -1 (num.c:79-80), so a step
+ *   LITTLE: srcmsb is size - 1 and srcmsb2lsb is -1 (num.c:76-77), so a step
  *           beyond the most significant end lands at index -1 -- BELOW the
  *           object -- and a size of zero makes srcmsb wrap to SIZE_MAX, which
  *           is the same byte again.  The object goes flush against `low`.
@@ -1006,10 +1006,21 @@ param_guard_run(param_guard_body *body, struct param_guard_record *record,
  * in the CTest log of a passing run -- the same reasoning as
  * tests/test_err_death.c's redirect.  Doing it inside the body confines it to
  * this child, so every other body keeps its diagnostics: there, a report is
- * evidence of a real defect and losing it would be losing the diagnosis.  The
- * freopen() result is consumed because GCC declares it warn_unused_result, and
- * a failed redirect is not worth acting on -- the fault below is the point of
- * the function either way.
+ * evidence of a real defect and losing it would be losing the diagnosis.
+ *
+ * The freopen() result is TESTED rather than cast to void, matching
+ * tests/test_err_death.c's redirect.  GCC declares freopen()
+ * warn_unused_result, and a `(void)` cast does NOT suppress that attribute the
+ * way it suppresses an ordinary unused value -- so casting left every
+ * optimizing configuration, -DCMAKE_BUILD_TYPE=Release among them, emitting
+ * -Wunused-result from this one line and nowhere else in the suite.
+ *
+ * Unlike the death harness, a failed redirect is deliberately NOT acted on
+ * here: this body has to go on to fault, because the parent's entire verdict
+ * is that the body did not complete.  Bailing out would report an unarmed
+ * guard page for a reason that has nothing to do with guard pages, so the
+ * branch is empty on purpose and the fault below remains the point of the
+ * function either way.
  */
 static PARAMUTIL_MAYBE_UNUSED void
 param_guard_body_self_test(struct param_guard_record *record,
@@ -1017,7 +1028,9 @@ param_guard_body_self_test(struct param_guard_record *record,
 {
     const volatile unsigned char *below = guard->low - 1;
 
-    (void)freopen("/dev/null", "w", stderr);
+    if (freopen("/dev/null", "w", stderr) == NULL) {
+        /* Deliberately empty; see the comment above this function. */
+    }
 
     record->ivalue = (int)*below;
     record->rc = 1;

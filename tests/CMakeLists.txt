@@ -180,8 +180,8 @@ endfunction()
 # ---------------------------------------------------------------------------
 # Three of num.c's guards exist only to keep an index inside its buffer, and
 # removing any of them changes no return code and no destination value for any
-# input: paramsign()'s zero-size guard (num.c:24-25), the padding-strip loop's
-# bound (num.c:100) and the padding offset (num.c:132).  MEASURED: with the
+# input: paramsign()'s zero-size guard (num.c:19-20), the padding-strip loop's
+# bound (num.c:92) and the padding offset (num.c:119).  MEASURED: with the
 # first of those reintroduced, all eight targets stayed green.  Their only
 # observable is an access one byte outside an object, and the mandated command
 # passes no sanitizer flag, so without a mechanism here they are untested under
@@ -195,7 +195,7 @@ endfunction()
 # byte for byte as it was.
 #
 # One defect is deliberately NOT claimed here.  Reverting the zero-capacity
-# clamp at num.c:99 makes the strip loop read one byte below provnum_set_*'s own
+# clamp at num.c:91 makes the strip loop read one byte below provnum_set_*'s own
 # `src` parameter -- inside the library function's stack frame, which a test owns
 # no part of and can put no page against, so whether that revert changes any
 # answer is decided by a byte no fixture controls (measured here: it does, 200

@@ -114,17 +114,22 @@
 
 /*
  * The POSIX headers are included INSIDE the guard on purpose.  <sys/wait.h>,
- * <unistd.h> and <sys/types.h> do not exist on a non-POSIX host, so including
- * them unconditionally would make the fallback at the foot of this file
- * unreachable: the compile would fail on a missing header long before the
- * preprocessor reached the alternative.  <signal.h> and <errno.h> are ISO C
- * and stay above.
+ * <unistd.h>, <sys/types.h> and <sys/resource.h> do not exist on a non-POSIX
+ * host, so including them unconditionally would make the fallback at the foot
+ * of this file unreachable: the compile would fail on a missing header long
+ * before the preprocessor reached the alternative.  <signal.h> and <errno.h>
+ * are ISO C and stay above.
+ *
+ * <sys/resource.h> is here for the setrlimit(RLIMIT_CORE) call in the forked
+ * child inside death_run(): see the comment there for the artifact this
+ * harness would otherwise leave behind on every run.
  */
 #ifndef _WIN32
 
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <sys/resource.h>
 
 /*
  * Exit statuses a child uses to report that something went wrong INSIDE it.
@@ -227,9 +232,37 @@ static struct death_result death_run(void (*body)(void))
 
   if (child == 0) {
     /*
-     * The child.  Its stderr goes to /dev/null so that the assertion messages
-     * this file EXPECTS -- glibc's "Assertion `core != NULL' failed" and its
-     * kin -- do not pollute the log of a passing test.
+     * The child.  Every aborting case in this file kills it with SIGABRT, and
+     * SIGABRT is a core-dumping signal, so an inherited RLIMIT_CORE lets each
+     * EXPECTED abort write a core file.  Measured before this call existed: one
+     * direct run of test_err_death left 6 dumps of 454656 bytes each, ~2.7 MB
+     * per run, at whatever /proc/sys/kernel/core_pattern points to -- and on a
+     * host whose pattern is the default bare "core" that is inside the CTest
+     * working directory, where it also shows up in git status.  AAP 0.7.2
+     * requires a run to leave no artifact behind, so the limit is dropped to
+     * zero here, in the child only, before anything can fault.
+     *
+     * This changes only whether the kernel writes the image: the child is still
+     * killed by SIGABRT, so WIFSIGNALED()/WTERMSIG() below observe exactly what
+     * they observed before, and the parent's limits are untouched because
+     * setrlimit() applies to the calling process after fork().
+     *
+     * The result is deliberately cast away rather than tested.  A host that
+     * refuses to lower RLIMIT_CORE (which cannot happen for a soft-limit
+     * decrease under POSIX) would merely go back to writing the dumps it wrote
+     * before; that is a hygiene regression, not a wrong verdict, and failing
+     * the abort contract over it would be a false negative.
+     */
+    struct rlimit death_no_core;
+
+    death_no_core.rlim_cur = 0;
+    death_no_core.rlim_max = 0;
+    (void)setrlimit(RLIMIT_CORE, &death_no_core);
+
+    /*
+     * Its stderr goes to /dev/null so that the assertion messages this file
+     * EXPECTS -- glibc's "Assertion `core != NULL' failed" and its kin -- do
+     * not pollute the log of a passing test.
      *
      * The freopen() result has to be consumed, because glibc declares
      * freopen() warn_unused_result.  It is TESTED rather than cast away: if

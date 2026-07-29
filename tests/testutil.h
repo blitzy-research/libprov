@@ -62,6 +62,32 @@
 #include <stddef.h>
 #include <inttypes.h>
 
+/*
+ * Whether the PASS/FAIL tags and the summary line carry ANSI colour.  Defined
+ * to 1 by default because the maintainer's own test programs print colourised
+ * pass/fail lines and this header exists to extend that idiom, not to replace
+ * it; -DTESTUTIL_COLOUR=0 builds every test binary escape-free for a consumer
+ * that archives or diffs raw CTest logs.  Either way the escapes are confined
+ * to the two writers below (testutil_tag() and testutil_report()) and never
+ * appear inside a value being reported, so a colourised log stays readable as
+ * plain text and no test asserts on an escape sequence.
+ *
+ * The decision is deliberately COMPILE-TIME, and deliberately not a runtime
+ * isatty() check, for two independent reasons:
+ *
+ *   - isatty() would drag <unistd.h> into a header that every test includes,
+ *     including translation units compiled under strict C99 where POSIX
+ *     declarations are not visible.  This header's include set is limited to
+ *     ISO C on purpose.
+ *   - it would also make output depend on how the process was invoked, and the
+ *     suite is required to be hermetic: no environment and no ambient state may
+ *     change what a test does, which is why the environment is not consulted
+ *     either (a NO_COLOR-style variable is excluded for the same reason).
+ *
+ * A run therefore produces byte-identical output whether stdout is a terminal,
+ * a pipe, a file or a CTest log, and the toggle is the single documented way to
+ * change that.
+ */
 #ifndef TESTUTIL_COLOUR
 # define TESTUTIL_COLOUR 1
 #endif

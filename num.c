@@ -1,4 +1,4 @@
-/* CC0 license applied, see LICENSE */
+/* CC0 license applied, see LICENCE.md */
 
 #include <string.h>
 #include "prov/num.h"
@@ -15,12 +15,7 @@ static endian_t nativeendian(void)
 
 static sign_t paramsign(const OSSL_PARAM *param)
 {
-    /*
-     * paramsign() runs before provnum_copy() can validate anything, so it
-     * must guard {NULL,INTEGER,4} (SEGV) and {buf,INTEGER,0} (read buf[-1])
-     * before indexing.  provnum_copy() still answers -4 for the first and
-     * empty-source success for the second.
-     */
+    /* Runs pre-validation: {NULL,INTEGER,4} SEGVd, {buf,INTEGER,0} read -1. */
     if (param->data == NULL || param->data_size == 0)
         return POSITIVE;
 
@@ -46,7 +41,8 @@ struct numdesc {
     /* These fields concern the limbs of the number */
     size_t limbsize;
     endian_t limbendian;
-    /* Unused bits at the top of each limb, on architectures that have them. */
+    /* This is for odd archs. */
+    /* see the manual for mpz_import() for an in depth explanation. */
     size_t limbnailbits;
 };
 
@@ -76,6 +72,7 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
         return result;
     }
 
+    /* Extra data */
     size_t srcmsb = src.endian == BIG ? 0 : src.size - 1;
     int srcmsb2lsb = src.endian == BIG ? 1 : -1;
 
@@ -85,17 +82,12 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
      * The rules to determine if the most significant byte is just padding
      * are:
      *
-     * 1. the most significant byte equals src.sign, which just so happens
+     * 1. the most significant byte equals srcsigned, which just so happens
      *    to have the 2's complement padding value.
      * 2. The most significant bit of the next to most significant byte
-     *    equals the most significant bit of src.sign.
+     *    equals the most significant bit of srcsigned.
      */
-    /*
-     * Clamping a zero-capacity destination keeps the loop below from walking
-     * past the start of the source: provnum_set_size_t(&p, 0) into a
-     * data_size == 0 destination read src[-1].  The documented answer, -2
-     * with return_size == 0, is unchanged.
-     */
+    /* dest.size == 0 let provnum_set_size_t(&p, 0) read src[-1]; -2 stands. */
     size_t end = dest.data == NULL || dest.size == 0 ? 1 : dest.size;
     for (; src.size > end; srcmsb += srcmsb2lsb, src.size--)
         if (((unsigned char *)src.data)[srcmsb] != src.sign
@@ -122,13 +114,8 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
         && (dest.data_type == OSSL_PARAM_INTEGER || src.sign == POSITIVE)) {
 
         if (src.size < dest.size) {
-            /*
-             * A LITTLE destination holds its significant bytes from offset
-             * 0, so its padding starts at src.size.  The old
-             * dest.size - src.size overran a 12-byte provnum_set_int(&p, 5)
-             * destination, and made a 9-byte all-0xFF provnum_get_int()
-             * yield -16776961 instead of -1.
-             */
+            /* dest.size - src.size overran a 12-byte set_int(&p, 5) dest */
+            /* and made a 1-byte 0xFF get_int() yield -16776961, not -1.  */
             size_t padstart = dest.endian == BIG ? 0 : src.size;
 
             memset((unsigned char *)dest.data + padstart, src.sign,

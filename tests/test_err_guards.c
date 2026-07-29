@@ -155,6 +155,27 @@
 #endif
 
 /*
+ * The CTest target this compilation becomes, used as the label of the summary
+ * line TEST_REPORT() prints.  It has to track the variant for the same reason
+ * GUARD_VARIANT_NAME does: both binaries are built from this one source, so a
+ * hard-coded label made the _ndebug target sign its own summary
+ * "test_err_guards: 66 assertions" and a reader of a combined log could not
+ * tell which of the two produced which counts, nor that 66 and 133 are two
+ * different contracts rather than one flaky one.  Kept identical to the target
+ * names registered in tests/CMakeLists.txt:316-321 so `ctest -R <label>`
+ * selects exactly the binary that printed the line.
+ *
+ * Informational only, exactly like GUARD_VARIANT_NAME: TEST_REPORT() derives
+ * the verdict from testutil.h's assertion and mismatch counters, never from
+ * this string.
+ */
+#ifdef LIBPROV_TEST_NDEBUG_VARIANT
+# define GUARD_TARGET_NAME "test_err_guards_ndebug"
+#else
+# define GUARD_TARGET_NAME "test_err_guards"
+#endif
+
+/*
  * The reason code every raise below carries.  Deliberately not 0 and not 1:
  * err.c:102 forwards it verbatim to the stub, so a distinctive value turns
  * "the reason arrived" into a falsifiable claim rather than something a zeroed
@@ -781,7 +802,7 @@ int main(void)
    * the two contracts the assertion lines below belong to, so a `ctest -V` log
    * for one variant cannot be confused for the other.
    */
-  printf("test_err_guards: variant = %s\n", GUARD_VARIANT_NAME);
+  printf("%s: variant = %s\n", GUARD_TARGET_NAME, GUARD_VARIANT_NAME);
 
   ret &= test_common_happy_path();
 
@@ -811,7 +832,7 @@ int main(void)
    * disagreed would be a defect in the harness that should fail loudly rather
    * than be resolved in favour of whichever one said "pass".
    */
-  status = TEST_REPORT("test_err_guards");
+  status = TEST_REPORT(GUARD_TARGET_NAME);
 
   return status != 0 || ret != 1 ? 1 : 0;
 }
