@@ -6,24 +6,24 @@
  * reachable outcome, the exact bytes left in the destination, and the side
  * effect on OSSL_PARAM.return_size that no header documents.
  *
- * WHAT THE SETTERS ARE.  num.c:169-183 is the provnum_set_##T half of the
+ * WHAT THE SETTERS ARE.  num.c:167-181 is the provnum_set_##T half of the
  * implement_provnum(T, DT) macro, instantiated twice: for size_t with
- * OSSL_PARAM_UNSIGNED_INTEGER at num.c:185, and for int with
- * OSSL_PARAM_INTEGER at num.c:186.  Each builds a destination descriptor from
- * the caller's OSSL_PARAM (num.c:172-175), builds a source descriptor whose
+ * OSSL_PARAM_UNSIGNED_INTEGER at num.c:183, and for int with
+ * OSSL_PARAM_INTEGER at num.c:184.  Each builds a destination descriptor from
+ * the caller's OSSL_PARAM (num.c:170-173), builds a source descriptor whose
  * data_type is the macro's DT and whose sign is HARDCODED POSITIVE
- * (num.c:176-178), hands both to provnum_copy() (num.c:59-152), assigns the
- * result's size to param->return_size (num.c:181) and returns the result's
+ * (num.c:174-176), hands both to provnum_copy() (num.c:58-150), assigns the
+ * result's size to param->return_size (num.c:179) and returns the result's
  * code.  Every claim in this file follows from those lines.
  *
- * SUCCESS IS EXACTLY 1, and include/prov/num.h never says so: only num.c:61's
+ * SUCCESS IS EXACTLY 1, and include/prov/num.h never says so: only num.c:60's
  * "struct resultdesc result = { dest.size, 1, };" fixes it.  Every success
  * below is asserted as == 1 literally -- never >= 0, != 0 or > 0, any of which
  * would accept a value the contract forbids.
  *
- * return_size IS WRITTEN ON EVERY PATH, INCLUDING EVERY FAILURE.  num.c:181
+ * return_size IS WRITTEN ON EVERY PATH, INCLUDING EVERY FAILURE.  num.c:179
  * assigns it unconditionally after provnum_copy() has returned, and
- * result.size was initialised to dest.size at num.c:61 and is overwritten by
+ * result.size was initialised to dest.size at num.c:60 and is overwritten by
  * no error path, so param->return_size == param->data_size holds whether the
  * call succeeded or returned -2 or -4.  check_set_side_effects() asserts it
  * after every call this file makes.  The side effect is undocumented but load
@@ -31,7 +31,7 @@
  * the assignment on the error paths would be a silent ABI break.
  *
  * ONLY TWO ERROR CODES ARE REACHABLE THROUGH THE SETTERS: -2
- * (PROVNUM_E_TOOBIG, num.c:108-111) and -4 (PROVNUM_E_NULL, num.c:115-118).
+ * (PROVNUM_E_TOOBIG, num.c:106-109) and -4 (PROVNUM_E_NULL, num.c:113-116).
  * The other two are unreachable BY CONSTRUCTION; test_set_unreachable_docs()
  * carries the proofs together with the complementary facts that make them
  * evidence rather than assumption.
@@ -84,10 +84,11 @@
  * assertion counters, so falling off the end of main() cannot manufacture a
  * pass.
  *
- * NO LIBCRYPTO.  <openssl/params.h> is never included and no OSSL_PARAM_get_,
- * OSSL_PARAM_set_ or OSSL_PARAM_construct_ function is called: those are the
- * libcrypto helpers the provnum_ family exists to replace.  OSSL_PARAM is a
- * plain public struct from <openssl/core.h> and is built here by hand.
+ * NO LIBCRYPTO.  No OSSL_PARAM_get_, OSSL_PARAM_set_ or OSSL_PARAM_construct_
+ * function is called: those are the libcrypto helpers the provnum_ family
+ * exists to replace.  <openssl/params.h> is genuinely absent from this
+ * translation unit too, prov/num.h reaching only <openssl/core.h>, which is
+ * where OSSL_PARAM comes from -- a plain public struct, built here by hand.
  *
  * THREE BEHAVIORS ARE GENUINELY AMBIGUOUS and are documented rather than
  * asserted, each under a "Class C" heading: the zero padding a negative int
@@ -99,16 +100,31 @@
  * contract.  Do not "complete" them by asserting the emitted value.
  *
  * THE TWO MEMORY-SAFETY REPAIRS MADE TO num.c ARE GUARDED HERE, each on both
- * instantiations, and the two guards differ in strength.  Every destination
- * buffer in this file is WIDER than the capacity its OSSL_PARAM declares and
- * the bytes past that capacity are asserted to still hold the sentinel, so a
- * regression of the padding-offset repair at num.c:134 writes into that margin
- * and fails in an ORDINARY build: the over-wide destination cases in
- * test_set_int_happy() and test_set_size_t_bytes() are the guards.  The
- * zero-capacity clamp at num.c:101 is different: its regression is an
- * out-of-bounds READ that leaves the answer (-2) and the return_size (0)
- * untouched, so the zero-capacity cases in test_set_errors() pin those values
- * in every build but detect the read itself only under a sanitizer.
+ * instantiations, and the two guards differ in strength because the two defects
+ * differ in where they touch memory.
+ *
+ * The padding-offset repair at num.c:132 is an out-of-bounds WRITE into the
+ * DESTINATION, which the test owns, so it is caught deterministically twice
+ * over.  Every destination buffer in this file is WIDER than the capacity its
+ * OSSL_PARAM declares and the bytes past that capacity are asserted to still
+ * hold the sentinel, so a regression writes into that margin and fails in an
+ * ORDINARY build -- the over-wide destination cases in test_set_int_happy() and
+ * test_set_size_t_bytes() are those guards.  test_set_guarded_boundaries() then
+ * puts a destination flush against a PROT_NONE page, so the same write becomes a
+ * fault rather than a mismatch, and asserts the same contract with the
+ * destination's other end protected as well.
+ *
+ * The zero-capacity clamp at num.c:99 is different in kind, not merely in
+ * degree: its regression is an out-of-bounds READ inside provnum_set_*'s OWN
+ * stack frame -- num.c:175 builds the source descriptor over `&src` -- which no
+ * fixture in this file can protect.  The zero-capacity cases in test_set_errors()
+ * therefore pin the full documented answer (-2, return_size 0, buffer untouched)
+ * in every build, test_set_guarded_boundaries() proves the neighbouring property
+ * that a zero-capacity call touches no destination byte at all, and the read
+ * itself is detected by the opt-in -fsanitize=address configuration the
+ * specification names for exactly that purpose.  The comment headed "THE
+ * ZERO-CAPACITY CLAMP: WHAT THIS FILE CAN AND CANNOT OBSERVE" sets out the
+ * reasoning, the measurement and the alternatives that were tried and rejected.
  *
  * ACCUMULATOR IDIOM.  Each function keeps its own "int ret = 1;" and folds in
  * each verdict with "ret &= test;", the project's own pattern.  That local
@@ -116,6 +132,26 @@
  * because the file-scope one is refreshed from the counters by every assertion
  * and so cannot accumulate.
  */
+
+/*
+ * THE FEATURE-TEST LEVEL, AND IT HAS TO BE SET HERE.  A feature-test macro
+ * decides which declarations the C library's headers make visible, so it is
+ * only effective before the FIRST #include -- which is why this block sits
+ * above them rather than beside the code that needs it.  _DEFAULT_SOURCE and
+ * not a _POSIX_C_SOURCE level, because param_util.h's protected-boundary
+ * oracle needs MAP_ANONYMOUS, which is a Linux and BSD extension rather than a
+ * POSIX flag; tests/test_err_death.c sets _POSIX_C_SOURCE for its own harness
+ * because everything that one uses IS POSIX.  MEASURED on this host: glibc
+ * reveals all of it under a bare -std=c99 anyway, so this buys portability
+ * rather than fixing anything here, and param_util.h fails the compile with a
+ * diagnostic naming the cause if a C library does gate them.  The same block
+ * stands at the head of tests/test_num_get.c, for the same reason.
+ */
+#ifdef LIBPROV_TEST_GUARD_PAGES
+# if !defined(_DEFAULT_SOURCE)
+#  define _DEFAULT_SOURCE 1
+# endif
+#endif
 
 #include "testutil.h"
 #include "param_util.h"
@@ -130,7 +166,7 @@
  * Every destination buffer in this file is this wide, whatever capacity the
  * OSSL_PARAM over it declares, and the bytes beyond that capacity are
  * asserted to still hold the sentinel.  That is what turns an out-of-bounds
- * write -- the shape of the padding-offset defect num.c:134 was repaired for
+ * write -- the shape of the padding-offset defect num.c:132 was repaired for
  * -- into an ordinary assertion failure rather than something only a
  * sanitizer notices.  The widest capacity any case declares is the larger of
  * 3 * sizeof(int) and sizeof(size_t) + sizeof(int), so this expression is
@@ -168,9 +204,9 @@ struct set_case {
 /*
  * Whether a return code is one the setters can actually produce.  The two it
  * excludes are the named exclusions proved in test_set_unreachable_docs():
- * PROVNUM_E_WRONG_TYPE, whose guard (num.c:63-64) tests a source data_type
- * num.c:176-178 hardcodes to an accepted one, and PROVNUM_E_UNSUPPORTED
- * (num.c:150), whose fallthrough needs a source sign the same lines hardcode
+ * PROVNUM_E_WRONG_TYPE, whose guard (num.c:62-63) tests a source data_type
+ * num.c:174-176 hardcodes to an accepted one, and PROVNUM_E_UNSUPPORTED
+ * (num.c:148), whose fallthrough needs a source sign the same lines hardcode
  * to POSITIVE.
  */
 static int rc_is_reachable(int rc)
@@ -221,7 +257,7 @@ static int set_size_t_width_expressible(size_t width)
 
 /*
  * Can a `width`-byte destination REFUSE an int, as PROVNUM_E_TOOBIG?  Only if
- * it is genuinely narrower than the source: num.c:108-111 compares the
+ * it is genuinely narrower than the source: num.c:106-109 compares the
  * stripped source width against the destination's declared size, so where the
  * destination is as wide as the native type there is nothing to refuse and the
  * documented answer is 1 rather than -2.  Expressibility is required as well,
@@ -323,117 +359,81 @@ static size_t set_size_t_from_msb_first(const unsigned char *msb_first,
 
 /*
  * ---------------------------------------------------------------------------
- * MAKING THE D2 REGRESSION GUARD DETERMINISTIC
+ * THE ZERO-CAPACITY CLAMP: WHAT THIS FILE CAN AND CANNOT OBSERVE
  * ---------------------------------------------------------------------------
- * The zero-capacity clamp at num.c:101 is the one repair in num.c whose
- * presence and absence produce the SAME documented answer, PROVNUM_E_TOOBIG,
- * on almost every run.  Removing "|| dest.size == 0" leaves the strip loop's
- * bound `end` at 0, so the loop at num.c:102-106 keeps going while src.size is
+ * Read this before adding a case that hopes to catch a regression of the clamp
+ * at num.c:99, because the limit below is a property of where the memory lives
+ * and not of how hard the test tries.
+ *
+ * WHAT A REVERT DOES.  Removing "|| dest.size == 0" leaves the strip loop's
+ * bound `end` at 0, so the loop at num.c:100-104 keeps going while src.size is
  * merely greater than zero, and its final iteration -- the one that would take
  * src.size from 1 to 0 -- evaluates rule 2 at
  *
  *     src.data[srcmsb + srcmsb2lsb]
  *
- * which is one position OUTSIDE the source, immediately below it on a
- * little-endian host.  Whether the regressed library answers PROVNUM_E_TOOBIG
- * or success is decided by that one out-of-bounds byte:
+ * one position OUTSIDE the source: immediately below it on a little-endian host.
+ * Whether the regressed library then answers PROVNUM_E_TOOBIG or success is
+ * decided by that one out-of-bounds byte -- if its high bit differs from the pad
+ * byte's, rule 2 fails, the loop breaks with src.size still 1, and 1 > 0 gives
+ * PROVNUM_E_TOOBIG, the right answer reached by undefined behaviour; if it
+ * matches, the loop runs to src.size == 0, the oversize test at num.c:106 no
+ * longer holds, and the call returns 1.
  *
- *   - if its high bit differs from the pad byte's, rule 2 fails, the loop
- *     breaks with src.size still 1, and 1 > 0 gives PROVNUM_E_TOOBIG -- the
- *     right answer, reached by undefined behaviour, and INDISTINGUISHABLE from
- *     correct code;
- *   - if its high bit matches, the loop runs to src.size == 0, the oversize
- *     test at num.c:108 no longer holds, and the call returns 1.
+ * WHY NO FIXTURE IN THIS FILE CAN CONTROL THAT BYTE.  For a setter, the source
+ * is not the test's.  num.c:175 builds the source descriptor over `&src` -- the
+ * value parameter of provnum_set_size_t() or provnum_set_int() -- so the byte the
+ * regressed loop reads is at ((unsigned char *)&src)[-1], inside the library
+ * function's OWN stack frame.  A test owns its destination buffer and can put a
+ * protected page against either end of it; it does not own the callee's frame
+ * and cannot place anything against that, which is why the guarded group at the
+ * end of this file pins the complementary property it CAN pin unconditionally --
+ * that a zero-capacity call touches no byte of the destination -- rather than
+ * this one.  Attempts that were tried and rejected, so they are not tried again:
+ * painting the callee's frame from a noinline scratch function (nonportable, and
+ * it makes the verdict depend on whether the compiler kept that frame),
+ * sigaltstack and makecontext (the ABI's stack alignment stops &src from ever
+ * landing on a page boundary), --wrap=memcpy (the read does not go through
+ * memcpy), and _FORTIFY_SOURCE or UBSan (neither checks bounds for pointer
+ * arithmetic on a stack object).
  *
- * That byte is whatever the previous use of the stack left behind, which is
- * why the D2 cases without this fixture killed a reverted num.c on some
- * runs and not others: measured directly, a reverted library survived 200
- * runs out of 200 when the region below the frame held 0xFF, and was caught
- * 200 out of 200 when it held 0x00.
+ * WHAT IS ASSERTED DETERMINISTICALLY, IN EVERY BUILD AND ON EVERY HOST.  The
+ * full documented answer for a zero-capacity destination: PROVNUM_E_TOOBIG,
+ * return_size left at 0, and every byte of the caller's buffer still holding the
+ * sentinel.  Both instantiations, positive and negative sources, in
+ * test_set_errors() and again in test_set_return_size_invariant().  Those
+ * assertions pin the CONTRACT, which is what a caller depends on.  What they
+ * cannot pin is whether a particular build arrived at it by reading a byte it
+ * had no business reading.
  *
- * So this function paints the region the callee's frame is about to occupy.
- * Called immediately before a setter, its own frame lands where
- * provnum_set_size_t()'s and provnum_set_int()'s frame will land, and the
- * bytes it leaves there are the bytes a regressed strip loop would read.
+ * SO A REVERTED CLAMP IS CAUGHT ONLY IF IT CHANGES THE ANSWER, and whether it
+ * does is decided by that one byte.  MEASURED here: a reverted num.c fails those
+ * assertions -- returning 1 instead of -2 -- on 200 runs out of 200, because the
+ * byte below the frame on this host happens to have its high bit clear.  That is
+ * a fact about this host, NOT a guarantee, and it is recorded as a measurement
+ * rather than relied on as a mechanism.  An earlier version of this file tried to
+ * make it a mechanism by painting the callee's frame from a noinline scratch
+ * function; that was removed, because a verdict that depends on whether the
+ * compiler kept a frame is not a verdict.
  *
- * WHY IT CANNOT MAKE A CORRECT LIBRARY FAIL, which is the property that makes
- * a fixture like this legitimate rather than a fudge.  This is a proof, not a
- * measurement: with the clamp in place `end` is at least 1, so the loop stops
- * while src.size is still 1 and its last rule-2 evaluation happens at
- * src.size == 2, reading significance 0 -- inside the source.  THE REPAIRED
- * LIBRARY NEVER READS OUTSIDE THE SOURCE BUFFER AT ALL, at any capacity, so
- * there is no byte for this function to influence and every case in this file
- * answers exactly as it would without it.  The 200-run measurement above
- * confirms that empirically for both instantiations; the argument above is why
- * it must hold generally.
+ * AND WHAT DETECTS THE READ ITSELF, on any host and whatever the answer.  The
+ * opt-in -fsanitize=address,undefined configuration, which the specification
+ * names as this project's memory-safety verification step (AAP section 0.9.1)
+ * and which it equally forbids enabling by default, so that the mandated
+ * flagless command stays exactly what was asked for (sections 0.5.4 and 0.8.2).
+ * MEASURED against a reverted num.c: "AddressSanitizer: stack-buffer-underflow
+ * ... READ of size 1 ... in provnum_copy", raised from provnum_set_size_t;
+ * against the repaired num.c the same case is completely clean.
  *
- * WHY THE FILL IS 0x00 AND NOTHING ELSE, which is a fact about num.c rather
- * than a convenience.  The loop compares the out-of-bounds byte's high bit
- * against src.sign's, and the setter half of implement_provnum() initialises
- * srcnd.sign to POSITIVE -- 0x00 -- UNCONDITIONALLY, at num.c:177, whatever
- * the value's own sign.  So the byte that arms the trap is always 0x00, and a
- * fill derived from the value would be derived from the wrong thing.  The
- * corollary is worth knowing and is asserted by the third D2 case below: a
- * negative source's bytes are 0xFF, they do not equal that hardcoded 0x00 pad,
- * so rule 1 fails on the FIRST iteration and the loop never reaches the
- * source's edge at all -- which means a negative zero-capacity case cannot arm
- * the trap and cannot detect a revert, no matter what this function paints.
- *
- * HONEST LIMITS.  The mechanism needs this function to keep its own frame,
- * which is what SET_NOINLINE asks for.  Where that attribute is unavailable
- * and a compiler inlines the array into the caller's frame instead, the
- * painting simply misses the callee's frame: every case still passes,
- * because of the proof above, and the suite only loses the guaranteed kill
- * on a D2 regression.
- * The opt-in sanitizer build remains the authoritative memory-safety check --
- * it reports the out-of-bounds read itself rather than inferring it from an
- * answer -- and this fixture is what makes the ordinary, flagless suite catch
- * the regression too.
+ * ONE COROLLARY WORTH KNOWING, asserted by the third zero-capacity case below.
+ * The loop compares the out-of-bounds byte's high bit against src.sign's, and
+ * num.c:175 initialises the setter's srcnd.sign to POSITIVE -- 0x00 --
+ * UNCONDITIONALLY, whatever the value's own sign.  A negative source's bytes are
+ * 0xFF, they do not equal that hardcoded pad, so rule 1 fails on the FIRST
+ * iteration and the loop never reaches the source's edge at all.  A negative
+ * zero-capacity case therefore cannot reach the defect even in a reverted build,
+ * which is why the positive cases are the ones that matter here.
  */
-#if defined(__GNUC__)
-# define SET_NOINLINE __attribute__((noinline))
-#else
-# define SET_NOINLINE
-#endif
-
-/*
- * Generously larger than any frame provnum_set_size_t() or provnum_set_int()
- * can need, so the painted region certainly covers the source scalar and the
- * bytes below it.  The cost is one pass over 4 KiB per setter call.
- */
-#define SET_STACK_PRECONDITION_BYTES 4096
-
-/*
- * The byte that arms a reverted strip loop, and the only value this fixture is
- * ever called with.  Named rather than written as a literal at three call
- * sites so that the reason -- num.c:177's hardcoded POSITIVE -- has somewhere
- * to live.
- */
-#define SET_STACK_PRECONDITION_FILL 0x00U
-
-static SET_NOINLINE unsigned char set_precondition_stack(unsigned char fill)
-{
-    /*
-     * volatile so the stores cannot be optimised away as dead -- nothing in
-     * this translation unit ever reads them, and their whole purpose is the
-     * side effect on memory the NEXT call will use.  A byte-at-a-time loop
-     * rather than memset(), which would need the volatile qualifier cast away.
-     */
-    volatile unsigned char scratch[SET_STACK_PRECONDITION_BYTES];
-    size_t i;
-
-    for (i = 0; i < SET_STACK_PRECONDITION_BYTES; i++)
-        scratch[i] = fill;
-
-    /*
-     * One byte read back, for two reasons.  It makes `scratch` a variable that
-     * is read as well as written, which is what -Wunused-but-set-variable asks
-     * for and the reason this function is not simply void; and it gives every
-     * call site something to discard explicitly, so the call reads as
-     * deliberate rather than as a statement whose value was forgotten.
-     */
-    return scratch[0];
-}
 
 /*
  * Every side effect a provnum_set_ call is required and permitted to have,
@@ -532,17 +532,6 @@ static int run_set_case(const struct set_case *c)
     param_snapshot(&before, &param);
 
     /*
-     * The D2 determinism fixture, immediately before the call and with nothing
-     * between them -- not a print, not an assertion, nothing that would put
-     * another frame over the region just painted.  Applied to every case, not
-     * only the zero-capacity ones: it is provably inert wherever no
-     * out-of-bounds read exists, and "every setter call in this file is
-     * preceded by it" is a rule that survives editing where "the zero-capacity
-     * ones are" would not.
-     */
-    (void)set_precondition_stack(SET_STACK_PRECONDITION_FILL);
-
-    /*
      * CALL, STORE, THEN ASSERT.  Nothing about the outcome is read until the
      * call has returned and its result is in a variable of its own.
      */
@@ -557,8 +546,8 @@ static int run_set_case(const struct set_case *c)
 
     if (c->expected_rc != 1) {
         /*
-         * Both reachable error paths -- PROVNUM_E_TOOBIG at num.c:108-111 and
-         * PROVNUM_E_NULL at num.c:115-118 -- return before provnum_copy()
+         * Both reachable error paths -- PROVNUM_E_TOOBIG at num.c:106-109 and
+         * PROVNUM_E_NULL at num.c:113-116 -- return before provnum_copy()
          * writes anything, so the whole buffer must still be the sentinel.
          * That holds for a null-data fixture too, where this buffer was never
          * handed to the parameter at all.
@@ -576,8 +565,8 @@ static int run_set_case(const struct set_case *c)
      * a check that the code merely ran.
      *
      * The capacity is necessarily non-zero at this point: a zero-capacity
-     * destination strips its source down to one byte at num.c:102-106 and is
-     * then refused by num.c:108-111, so it can only ever carry an expected
+     * destination strips its source down to one byte at num.c:100-104 and is
+     * then refused by num.c:106-109, so it can only ever carry an expected
      * result of PROVNUM_E_TOOBIG and has already returned above.
      */
     TEST_ASSERT_INT_EQ(c->what, memcmp(buffer, sentinel, c->capacity) != 0, 1);
@@ -602,6 +591,9 @@ static int test_set_size_t_bytes(void);
 static int test_set_errors(void);
 static int test_set_return_size_invariant(void);
 static int test_set_unreachable_docs(void);
+#ifdef LIBPROV_TEST_GUARD_PAGES
+static int test_set_guarded_boundaries(void);
+#endif
 
 int main(void)
 {
@@ -615,6 +607,15 @@ int main(void)
     ret &= test_set_errors();
     ret &= test_set_return_size_invariant();
     ret &= test_set_unreachable_docs();
+    /*
+     * Declared, called and defined under one condition, rather than stubbed to
+     * a group that returns 1 where the oracle is unavailable: a group that
+     * asserts nothing has no business reporting success, and the seven above
+     * are unaffected either way.
+     */
+#ifdef LIBPROV_TEST_GUARD_PAGES
+    ret &= test_set_guarded_boundaries();
+#endif
 
     /*
      * testutil.h's report is the authority on the exit status: it derives it
@@ -661,9 +662,9 @@ static int test_set_int_happy(void)
         /*
          * PADDING-OFFSET GUARD.  A destination three int widths deep takes the
          * value in its least significant sizeof(int) bytes and zero padding
-         * above: num.c:134 starts the padding at src.size on a LITTLE
-         * destination, and num.c:136-137 fills it with src.sign, hardcoded to
-         * POSITIVE by num.c:176-178 and defined as 0x00 at num.c:7.
+         * above: num.c:132 starts the padding at src.size on a LITTLE
+         * destination, and num.c:134-135 fills it with src.sign, hardcoded to
+         * POSITIVE by num.c:174-176 and defined as 0x00 at num.c:7.
          *
          * This shape is chosen because the unrepaired offset, dest.size -
          * src.size, evaluates to 8 here and would write dest[8 .. 15] into a
@@ -695,8 +696,8 @@ static int test_set_int_happy(void)
         /*
          * The narrowest destination there is.  Here the strip loop DOES run:
          * every byte above the least significant one is 0x00, which equals
-         * src.sign (rule 1, num.c:90-91 and :103), and the high bit of the
-         * next byte down is clear (rule 2, num.c:92-93 and :104-105), so the
+         * src.sign (rule 1, num.c:88-89 and :101), and the high bit of the
+         * next byte down is clear (rule 2, num.c:90-91 and :102-103), so the
          * source is stripped from sizeof(int) bytes to one and the value
          * fits.
          */
@@ -720,8 +721,8 @@ static int test_set_int_happy(void)
 
     /*
      * GATED on an int being more than one byte wide, because otherwise
-     * "sizeof(int) - 1" is a ZERO-capacity destination, which num.c:101 clamps
-     * and num.c:108-111 then refuses with PROVNUM_E_TOOBIG -- a different case
+     * "sizeof(int) - 1" is a ZERO-capacity destination, which num.c:99 clamps
+     * and num.c:106-109 then refuses with PROVNUM_E_TOOBIG -- a different case
      * with a different documented answer, already covered in
      * test_set_errors().  The gate is a property of the host, not of the
      * library.
@@ -729,7 +730,7 @@ static int test_set_int_happy(void)
     if (sizeof(int) > 1) {
         /*
          * One byte narrower than the source: the strip loop runs exactly once
-         * and then stops on its own bound, num.c:102, rather than on either
+         * and then stops on its own bound, num.c:100, rather than on either
          * padding rule.
          */
         unsigned char expected[SET_CASE_MAX_BYTES];
@@ -774,7 +775,7 @@ static int test_set_int_happy(void)
          * -1 is every bit set.  The expected pattern is derived as "the
          * largest value sizeof(int) bytes can hold" rather than transcribed,
          * and it is the two's-complement representation num.c's own padding
-         * rules assume (num.c:90-91 calls src.sign "the 2's complement padding
+         * rules assume (num.c:88-89 calls src.sign "the 2's complement padding
          * value").  Because the destination is exactly as wide as the source
          * no padding is involved, so this case says nothing about the
          * over-wide destination that Class C #2 below leaves open.
@@ -806,10 +807,10 @@ static int test_set_int_happy(void)
          * A negative int written into a destination wider than sizeof(int) is
          * ZERO padded, not sign extended, so a provnum_get_int() read back
          * does not recover the original value.  The mechanism is exact: the
-         * padding memset at num.c:136-137 writes src.sign, and num.c:176-178
+         * padding memset at num.c:134-135 writes src.sign, and num.c:174-176
          * hardcodes the source descriptor's sign to POSITIVE, which num.c:7
          * defines as 0x00.  The destination's own declared data_type has no
-         * say, because it is consulted only at num.c:124 where the
+         * say, because it is consulted only at num.c:122 where the
          * disjunction is already satisfied by src.sign == POSITIVE.
          *
          * Two readings of the contract are defensible and include/prov/num.h
@@ -864,7 +865,7 @@ static int test_set_int_extremes(void)
          * INT_MIN into a destination exactly as wide as an int.  The expected
          * bit pattern is derived as INT_MAX + 1 computed in uintmax_t, which
          * is the two's-complement representation of INT_MIN -- the
-         * representation num.c:90-91 already assumes when it calls src.sign
+         * representation num.c:88-89 already assumes when it calls src.sign
          * the 2's complement padding value.
          */
         unsigned char expected[SET_CASE_MAX_BYTES];
@@ -915,7 +916,7 @@ static int test_set_int_extremes(void)
      * to the smallest it refuses.  Both values are derived from
      * param_max_signed_in(1), which is CHAR_BIT arithmetic and not a literal
      * 127, so the pair still straddles the real boundary if a byte is not
-     * eight bits wide.  An off-by-one at num.c:102 or num.c:108 breaks one
+     * eight bits wide.  An off-by-one at num.c:100 or num.c:106 breaks one
      * half or the other.
      *
      * The whole band is GATED on set_int_width_refuses(1) -- a one-byte
@@ -927,8 +928,8 @@ static int test_set_int_extremes(void)
     if (set_int_width_refuses(1)) {
         /*
          * Strips cleanly: the bytes above the least significant one are
-         * 0x00 == src.sign (rule 1, num.c:103), and the high bit of the
-         * surviving byte is clear, which is what rule 2 (num.c:104-105)
+         * 0x00 == src.sign (rule 1, num.c:101), and the high bit of the
+         * surviving byte is clear, which is what rule 2 (num.c:102-103)
          * requires of the byte below the one being dropped.
          */
         unsigned char expected[SET_CASE_MAX_BYTES];
@@ -956,8 +957,8 @@ static int test_set_int_extremes(void)
          * One more, and the same loop refuses to strip.  The byte above the
          * least significant one is still 0x00, satisfying rule 1, but the
          * high bit of the byte below it is now SET, so rule 2
-         * (num.c:104-105) fails and the loop breaks at a source size of two.
-         * Two is greater than the one-byte destination, so num.c:108-111
+         * (num.c:102-103) fails and the loop breaks at a source size of two.
+         * Two is greater than the one-byte destination, so num.c:106-109
          * answers PROVNUM_E_TOOBIG and leaves the destination alone.
          *
          * For an int destination declared OSSL_PARAM_INTEGER this is
@@ -1030,15 +1031,15 @@ static int test_set_int_extremes(void)
  * OSSL_PARAM_UNSIGNED_INTEGER, yet a one-byte destination accepts only the
  * values whose top bit is clear.
  *
- * The mechanism, exactly.  num.c:176-178 hardcodes the SOURCE descriptor's
+ * The mechanism, exactly.  num.c:174-176 hardcodes the SOURCE descriptor's
  * sign to POSITIVE for the setter direction, which num.c:7 defines as 0x00.
- * The padding-strip loop at num.c:102-106 may therefore drop a leading byte
- * only while BOTH rules hold: rule 1 (num.c:90-91, tested at :103) needs the
- * byte being dropped to equal 0x00, and rule 2 (num.c:92-93, tested at
- * :104-105) needs the high bit of the next byte down to match the high bit of
+ * The padding-strip loop at num.c:100-104 may therefore drop a leading byte
+ * only while BOTH rules hold: rule 1 (num.c:88-89, tested at :101) needs the
+ * byte being dropped to equal 0x00, and rule 2 (num.c:90-91, tested at
+ * :102-103) needs the high bit of the next byte down to match the high bit of
  * 0x00, that is, to be clear.  A value with its top byte-bit set therefore
  * cannot be narrowed onto its own last byte, the loop stops one byte early,
- * and num.c:108-111 answers PROVNUM_E_TOOBIG.
+ * and num.c:106-109 answers PROVNUM_E_TOOBIG.
  *
  * Each pair below is written adjacently -- largest that fits, then smallest
  * that does not -- and both members are derived from param_max_signed_in() so
@@ -1081,7 +1082,7 @@ static int test_set_size_t_capacity(void)
          * destination, is REFUSED even though a single unsigned byte plainly
          * represents it.  Nothing about the destination's declared
          * OSSL_PARAM_UNSIGNED_INTEGER type changes that; only the source
-         * sign hardcoded at num.c:176-178 governs the strip loop.
+         * sign hardcoded at num.c:174-176 governs the strip loop.
          *
          * set_size_t_refused_value() derives the same value the pair's first
          * member is one below, converting it only under the gate this block
@@ -1127,7 +1128,7 @@ static int test_set_size_t_capacity(void)
         /*
          * A value that exceeds the destination's width outright, which reaches
          * the same PROVNUM_E_TOOBIG through a different route: here the strip
-         * loop breaks on rule 1 (num.c:103) because the surviving upper byte
+         * loop breaks on rule 1 (num.c:101) because the surviving upper byte
          * is not 0x00 at all, rather than on rule 2.  Both routes must answer
          * -2, and both must leave return_size at the declared data_size.
          */
@@ -1195,7 +1196,7 @@ static int test_set_size_t_capacity(void)
         /*
          * SIZE_MAX at the type's own width: every bit set, and accepted,
          * because a destination as wide as the source needs no stripping at
-         * all -- the loop bound at num.c:102 is false on entry.  This is the
+         * all -- the loop bound at num.c:100 is false on entry.  This is the
          * counterpart to the refusals above: the effective capacity is only
          * ever reduced when the destination is NARROWER than the source.
          */
@@ -1264,8 +1265,8 @@ static int test_set_size_t_capacity(void)
 /*
  * Byte-level output for provnum_set_size_t(), where the question is not
  * whether a value fits but WHERE each of its bytes lands.  nativeendian()
- * (num.c:9-14) drives both the destination offset chosen at num.c:140 and the
- * source offset at num.c:141, so every expectation here is laid out by
+ * (num.c:9-14) drives both the destination offset chosen at num.c:138 and the
+ * source offset at num.c:139, so every expectation here is laid out by
  * param_util.h from a logical description -- a most-significant-byte-first
  * pattern, or a value plus a padding width -- and never as a literal byte
  * string that would only be right on one byte order.
@@ -1346,7 +1347,7 @@ static int test_set_size_t_bytes(void)
 
     {
         /*
-         * PADDING-OFFSET GUARD on the OTHER instantiation.  num.c:134 is
+         * PADDING-OFFSET GUARD on the OTHER instantiation.  num.c:132 is
          * shared code, but each instantiation reaches it with a different
          * sizeof(T), so the size_t half needs its own over-wide destination:
          * the value lands in the least significant sizeof(size_t) bytes and
@@ -1404,10 +1405,10 @@ static int test_set_size_t_bytes(void)
  * Both error codes the setters can reach, on both instantiations, with the
  * destination asserted untouched and return_size asserted anyway.
  *
- * PROVNUM_E_NULL (-4) comes from num.c:115-118, the destination check, which
- * sits AFTER the oversize check at num.c:108-111 -- an ordering that matters
+ * PROVNUM_E_NULL (-4) comes from num.c:113-116, the destination check, which
+ * sits AFTER the oversize check at num.c:106-109 -- an ordering that matters
  * and is pinned by the last case in this group.  PROVNUM_E_TOOBIG (-2) comes
- * from num.c:108-111 and is reached here two ways: a destination with no
+ * from num.c:106-109 and is reached here two ways: a destination with no
  * capacity at all, and a destination narrower than the value needs.
  */
 static int test_set_errors(void)
@@ -1417,7 +1418,7 @@ static int test_set_errors(void)
     {
         /*
          * A parameter with a declared size but no buffer.  provnum_copy()
-         * reaches num.c:115-118 and answers PROVNUM_E_NULL; num.c:181 still
+         * reaches num.c:113-116 and answers PROVNUM_E_NULL; num.c:179 still
          * assigns return_size, which is exactly the kind of error-path side
          * effect a suite that only checked return codes would miss.
          */
@@ -1452,9 +1453,9 @@ static int test_set_errors(void)
     {
         /*
          * D2 REGRESSION GUARD.  A real buffer with a declared size of ZERO.
-         * The clamp at num.c:101 exists for exactly this shape: without the
+         * The clamp at num.c:99 exists for exactly this shape: without the
          * "|| dest.size == 0" the loop bound `end` would be 0, the condition
-         * at num.c:102 would stay true until the source size reached 0, and
+         * at num.c:100 would stay true until the source size reached 0, and
          * srcmsb would step one position before the start of the source
          * buffer.  The documented answer is unchanged by the repair --
          * PROVNUM_E_TOOBIG with return_size 0, because a source of
@@ -1462,21 +1463,23 @@ static int test_set_errors(void)
          * than zero -- so this case asserts the contract and the clamp keeps
          * it from being reached through undefined behaviour.
          *
-         * WHAT THIS CASE DOES AND DOES NOT ESTABLISH, stated precisely because
-         * a regression guard that only sometimes fires is worse than none.  A
-         * num.c with the clamp reverted still answers PROVNUM_E_TOOBIG
-         * whenever the out-of-bounds byte it reads has the wrong high bit,
-         * so on its own this assertion catches a revert only by luck.  What
-         * removes the luck is set_precondition_stack(), which run_set_case()
-         * calls immediately before every setter: it leaves the pad byte of
-         * this case's source in the memory a reverted strip loop would read,
-         * which drives the loop past the end of the source and makes the
-         * regressed library answer 1 instead of PROVNUM_E_TOOBIG.  With that
-         * fixture in place a revert fails THIS assertion on every run; the
-         * reasoning, the measurements behind it, and its limits are all
-         * recorded at set_precondition_stack().  The opt-in sanitizer build
-         * remains the authoritative check, because it reports the
-         * out-of-bounds read itself, not inferring it from an answer.
+         * WHAT THIS CASE DOES AND DOES NOT ESTABLISH, stated precisely because a
+         * regression guard that only sometimes fires is worse than a stated
+         * limit.  It pins the CONTRACT -- the exact code, the exact return_size
+         * and an untouched buffer -- on every host and in every build.  It
+         * detects a REVERTED clamp only if the revert changes that answer, which
+         * is decided by a byte inside the library function's own stack frame that
+         * no fixture here can control; measured on this host it does, 200 runs
+         * out of 200, but that is a measurement and not a mechanism.  The comment
+         * headed "THE ZERO-CAPACITY CLAMP: WHAT THIS FILE CAN AND CANNOT OBSERVE"
+         * gives the reasoning, the rejected alternatives and the measurement, and
+         * names the opt-in -fsanitize=address configuration that detects the read
+         * itself whatever the answer.
+         *
+         * test_set_guarded_boundaries() pins the neighbouring property that IS
+         * reachable: with this same capacity of zero and the destination pointer
+         * aimed into a protected page, a correct library must still answer
+         * PROVNUM_E_TOOBIG without touching one byte of it.
          *
          * run_set_case() compares the WHOLE buffer against the sentinel here,
          * not the declared capacity: a comparison of zero bytes inspects
@@ -1515,21 +1518,21 @@ static int test_set_errors(void)
          * pinning for exactly that reason.
          *
          * The setter half of implement_provnum() hardcodes srcnd.sign to
-         * POSITIVE at num.c:177 whatever the value is, so rule 1 (num.c:103)
+         * POSITIVE at num.c:175 whatever the value is, so rule 1 (num.c:101)
          * compares each source byte against 0x00.  A negative int's bytes are
          * 0xFF, they do not match, and the loop therefore breaks on its FIRST
          * iteration with src.size still at its full width -- which is greater
-         * than a capacity of zero, so num.c:108-111 refuses it.  No iteration
+         * than a capacity of zero, so num.c:106-109 refuses it.  No iteration
          * ever approaches the source's edge.
          *
          * MEASURED, NOT ASSUMED, and the measurement corrected an earlier
          * reading of this file: a num.c with the D2 clamp reverted answers
          * PROVNUM_E_TOOBIG here on every run, so this case does NOT detect a
          * revert and no claim is made that it does.  What it does establish is
-         * that the refusal holds for both padding polarities, and it documents
-         * why the trap the two cases above set can only ever be armed by an
-         * all-0x00 source -- the reason set_precondition_stack() paints 0x00
-         * unconditionally rather than deriving a fill from the value.
+         * that the refusal holds for both padding polarities, and it is the
+         * evidence for the corollary the header comment states: the defect can
+         * only ever be reached by an all-0x00 source, so a negative
+         * zero-capacity case is outside its reach whatever any fixture does.
          */
         struct set_case c = {
             .what = "set_int(-1) -> zero-capacity INTEGER destination, D2",
@@ -1548,16 +1551,16 @@ static int test_set_errors(void)
         /*
          * SIZE_MAX into a destination one byte narrower than a size_t.  Not a
          * single byte of the source is 0x00, so the strip loop breaks
-         * immediately on rule 1 (num.c:103) and the source keeps its full
+         * immediately on rule 1 (num.c:101) and the source keeps its full
          * width; sizeof(size_t) is greater than sizeof(size_t) - 1, so
-         * num.c:108-111 answers PROVNUM_E_TOOBIG.  The width is derived, so
+         * num.c:106-109 answers PROVNUM_E_TOOBIG.  The width is derived, so
          * this is "one byte too narrow for the widest value" on any ABI.
          *
          * No width gate, and none needed: the only host this reads differently
          * on is one with a single-byte size_t, where the capacity becomes 0
          * and the case turns into the zero-capacity destination two cases
          * above -- whose documented answer is the same PROVNUM_E_TOOBIG, by
-         * the clamp at num.c:101 and the comparison at num.c:108.  The
+         * the clamp at num.c:99 and the comparison at num.c:106.  The
          * expectation therefore holds at every width, which is what a gate
          * would have to establish.
          */
@@ -1601,8 +1604,8 @@ static int test_set_errors(void)
      * GATED on a one-byte destination being genuinely narrower than a size_t.
      * The case below needs BOTH of its guards satisfied at once, and the
      * oversize one is only satisfied while SIZE_MAX needs more than the one
-     * declared byte: where sizeof(size_t) is 1 the comparison at num.c:108 is
-     * false, execution reaches num.c:115-118, and the documented answer
+     * declared byte: where sizeof(size_t) is 1 the comparison at num.c:106 is
+     * false, execution reaches num.c:113-116, and the documented answer
      * becomes PROVNUM_E_NULL -- correct behaviour that this fixture would have
      * reported as a precedence failure.  set_size_t_width_refuses(1) asks
      * exactly that question, and asserting -2 unconditionally would have made
@@ -1611,11 +1614,11 @@ static int test_set_errors(void)
     if (set_size_t_width_refuses(1)) {
         /*
          * PRECEDENCE: oversize is decided BEFORE the destination pointer is
-         * checked.  num.c:108-111 runs ahead of num.c:115-118, so a parameter
+         * checked.  num.c:106-109 runs ahead of num.c:113-116, so a parameter
          * that is simultaneously too narrow AND has no buffer must answer
          * PROVNUM_E_TOOBIG, not PROVNUM_E_NULL.  A null destination clamps the
-         * loop bound to 1 at num.c:101, so the source is stripped as far as it
-         * can go and the comparison at num.c:108 is against the DECLARED
+         * loop bound to 1 at num.c:99, so the source is stripped as far as it
+         * can go and the comparison at num.c:106 is against the DECLARED
          * data_size -- one byte here, which SIZE_MAX cannot be narrowed into.
          *
          * This is the assertion that survives a reordering of the guard block:
@@ -1645,16 +1648,16 @@ static int test_set_errors(void)
      *
      * provnum_set_int(&param, -1) into a TWO-BYTE destination answers
      * PROVNUM_E_TOOBIG.  The mechanism is the same hardcoded sign as
-     * everywhere else in this file: num.c:176-178 sets the source sign to
+     * everywhere else in this file: num.c:174-176 sets the source sign to
      * POSITIVE == 0x00 (num.c:7), so the 0xFF bytes of -1 fail rule 1 at
-     * num.c:103 at the first iteration, the source keeps its full sizeof(int)
-     * width, and num.c:108-111 refuses it.
+     * num.c:101 at the first iteration, the source keeps its full sizeof(int)
+     * width, and num.c:106-109 refuses it.
      *
      *   (a) -1 is exactly representable in two bytes as 0xFFFF, and a
      *       conversion helper that knows the value is negative could narrow
      *       it, so this should succeed.
      *   (b) The padding-strip rules are stated in terms of the source's own
-     *       sign byte (num.c:84-94), and with that sign fixed at POSITIVE the
+     *       sign byte (num.c:82-92), and with that sign fixed at POSITIVE the
      *       value legitimately requires its full source width, so refusing it
      *       is correct.
      *
@@ -1674,8 +1677,8 @@ static int test_set_errors(void)
  * The return_size side effect, swept across every reachable path of both
  * instantiations at once.
  *
- * num.c:181 assigns param->return_size unconditionally from result.size, which
- * num.c:61 set to the DESTINATION's declared size and no other line writes, so
+ * num.c:179 assigns param->return_size unconditionally from result.size, which
+ * num.c:60 set to the DESTINATION's declared size and no other line writes, so
  * param->return_size == param->data_size holds identically on success, on
  * PROVNUM_E_TOOBIG and on PROVNUM_E_NULL.  A table that deliberately mixes all
  * three outcomes and both source widths proves the invariant is a property of
@@ -1815,9 +1818,6 @@ static int test_set_return_size_invariant(void)
 
         param_snapshot(&before, &param);
 
-        /* The D2 determinism fixture; see set_precondition_stack(). */
-        (void)set_precondition_stack(SET_STACK_PRECONDITION_FILL);
-
         /* Call, store, then assert -- never read an output in this call. */
         if (c->use_int)
             rc = provnum_set_int(&param, c->ivalue);
@@ -1831,8 +1831,8 @@ static int test_set_return_size_invariant(void)
         /*
          * The negative destination side effect, owed by every error row here
          * just as much as by the cases run_set_case() drives.  Both reachable
-         * setter error paths -- PROVNUM_E_TOOBIG at num.c:108-111 and
-         * PROVNUM_E_NULL at num.c:115-118 -- return before provnum_copy()
+         * setter error paths -- PROVNUM_E_TOOBIG at num.c:106-109 and
+         * PROVNUM_E_NULL at num.c:113-116 -- return before provnum_copy()
          * writes a single byte, so the WHOLE backing buffer must still hold
          * the sentinel: not merely the declared capacity, because a
          * padding-offset defect writes past it, and a partial comparison
@@ -1897,15 +1897,6 @@ static int check_no_unreachable_code(const char *what, unsigned int data_type,
     param_build(&param, data_type, buffer, capacity);
     param_snapshot(&before, &param);
 
-    /*
-     * The same fixture as everywhere else, so the rule really is "every setter
-     * call in this file".  Inert here -- the capacity is a full size_t and the
-     * value is 5, so no strip iteration comes near the source's edge -- and
-     * present so that no call site is an exception a later reader has to
-     * account for.
-     */
-    (void)set_precondition_stack(SET_STACK_PRECONDITION_FILL);
-
     if (use_int)
         rc = provnum_set_int(&param, 5);
     else
@@ -1933,24 +1924,24 @@ static int check_no_unreachable_code(const char *what, unsigned int data_type,
  * the sweep at the end asserts the complementary fact that makes them evidence
  * rather than assumption.
  *
- * PROVNUM_E_WRONG_TYPE (-1) IS UNREACHABLE.  The guard at num.c:63-64 tests
- * src.data_type, and num.c:176-178 hardcodes that member to the macro
- * parameter DT: OSSL_PARAM_UNSIGNED_INTEGER at num.c:185 and
- * OSSL_PARAM_INTEGER at num.c:186, precisely the two types the guard accepts.
+ * PROVNUM_E_WRONG_TYPE (-1) IS UNREACHABLE.  The guard at num.c:62-63 tests
+ * src.data_type, and num.c:174-176 hardcodes that member to the macro
+ * parameter DT: OSSL_PARAM_UNSIGNED_INTEGER at num.c:183 and
+ * OSSL_PARAM_INTEGER at num.c:184, precisely the two types the guard accepts.
  * It reads the SOURCE's type and not the destination's, which is why the sweep
  * below can walk every OSSL_PARAM data type without producing -1.
  *
- * PROVNUM_E_UNSUPPORTED (-3) IS UNREACHABLE.  The fallthrough at num.c:150 is
- * reached only when the simple-case condition at num.c:121-124 is false.  Its
+ * PROVNUM_E_UNSUPPORTED (-3) IS UNREACHABLE.  The fallthrough at num.c:148 is
+ * reached only when the simple-case condition at num.c:119-122 is false.  Its
  * last clause is "(dest.data_type == OSSL_PARAM_INTEGER || src.sign ==
- * POSITIVE)" and num.c:176-178 hardcodes src.sign to POSITIVE; the other three
- * clauses are always true as well, because num.c:172-178 give destination and
+ * POSITIVE)" and num.c:174-176 hardcodes src.sign to POSITIVE; the other three
+ * clauses are always true as well, because num.c:170-176 give destination and
  * source the same endianness from nativeendian(), a limbsize of 1 and a
- * limbnailbits of 0.  The condition cannot be false, so num.c:150 is dead
+ * limbnailbits of 0.  The condition cannot be false, so num.c:148 is dead
  * here.
  *
- * The empty-source shortcut at num.c:69-73 and the null-source guard at
- * num.c:75-78 are unreachable for the same reason: num.c:176-178 sets src.size
+ * The empty-source shortcut at num.c:68-72 and the null-source guard at
+ * num.c:74-77 are unreachable for the same reason: num.c:174-176 sets src.size
  * to sizeof(T), never zero, and src.data to the address of the setter's own
  * parameter, never null.  Both belong to the getter direction, where
  * tests/test_num_get.c reaches them.
@@ -1960,7 +1951,7 @@ static int check_no_unreachable_code(const char *what, unsigned int data_type,
  * param->data_type at all: writing a negative value into an
  * OSSL_PARAM_UNSIGNED_INTEGER destination behaves exactly as it does into an
  * OSSL_PARAM_INTEGER one, by the same clause as the -3 proof above --
- * dest.data_type is read at num.c:124 and nowhere else in the copy, and that
+ * dest.data_type is read at num.c:122 and nowhere else in the copy, and that
  * read is already satisfied by src.sign == POSITIVE.
  *
  *   (a) A negative value written into a destination the caller has declared
@@ -2017,3 +2008,370 @@ static int test_set_unreachable_docs(void)
 
     return ret;
 }
+
+#ifdef LIBPROV_TEST_GUARD_PAGES
+/*
+ * ===========================================================================
+ * THE DESTINATION AGAINST A PROTECTED PAGE
+ * ===========================================================================
+ * The rest of this file bounds a setter's writes by making every destination
+ * buffer wider than the capacity its OSSL_PARAM declares and asserting that the
+ * margin still holds the sentinel.  That catches an over-write as a MISMATCH,
+ * which is already deterministic and is not being replaced.  What it cannot do
+ * is bound the buffer itself: the margin is only as wide as it is, and a
+ * mismatch says a byte changed rather than that a byte outside the object was
+ * touched.
+ *
+ * So the four cases below hand the library a destination flush against a
+ * PROT_NONE page and let the hardware answer instead, under the mandated
+ * flagless command and with no build flag.  param_util.h's protected-boundary
+ * oracle owns the mechanism -- three pages, the outer two unreadable, the
+ * fixture run in a forked child so a fault is a named assertion failure rather
+ * than a dead test binary -- and explains why a correct library cannot be made
+ * to fail by it.
+ *
+ * WHAT EACH CASE PINS:
+ *
+ *   high edge, over-wide   the padding offset at num.c:132.  A 3 * sizeof(int)
+ *                          capacity fed a sizeof(int) source leaves the pad to
+ *                          cover [src.size, dest.size); the reverted
+ *                          dest.size - src.size aims it at [8, 16) of a
+ *                          12-byte object, four bytes past the end -- which is
+ *                          the protected page.
+ *   low edge, over-wide    the mirror bound: a correct conversion writes
+ *                          nothing BELOW the destination either, whatever the
+ *                          pad offset and the copy offset are computed from.
+ *   zero capacity          that a capacity of zero is refused without the
+ *                          destination being touched AT ALL.  The pointer aims
+ *                          at the first byte of the protected page, so any read
+ *                          or write of it faults; the answer must still be
+ *                          PROVNUM_E_TOOBIG with return_size 0.
+ *   narrow refusal         that a value too wide for the capacity is refused
+ *                          before anything is written, with the one available
+ *                          byte still holding its sentinel and the byte above
+ *                          it protected.
+ *
+ * AND WHAT NONE OF THEM PINS UNCONDITIONALLY: a regression of the zero-capacity
+ * clamp at num.c:99.  That defect reads below provnum_set_*'s own `src`
+ * parameter, inside the library's frame, so whether it changes the answer these
+ * cases assert is decided by a byte no fixture here controls -- the guarded
+ * zero-capacity case is exactly as host-dependent in that respect as its
+ * unguarded twins, and what it adds over them is the destination-untouched
+ * guarantee, which is not host-dependent at all.  The comment headed "THE
+ * ZERO-CAPACITY CLAMP: WHAT THIS FILE CAN AND CANNOT OBSERVE" sets out the
+ * reasoning, the measurement and the configuration that detects the read itself.
+ */
+
+# include <stdio.h>
+
+/*
+ * The same two helpers tests/test_num_get.c has, and deliberately not hoisted
+ * into param_util.h: that header owns FIXTURES, and a verdict helper needs
+ * testutil.h's assertion macros, so hoisting it would make the fixture layer
+ * depend on the assertion layer.  Three other files in this suite each carry
+ * their own label composer for the same reason.  Given a nonzero capacity
+ * snprintf() truncates rather than overruns, and its result is not consulted
+ * because the assertion prints its own file and line.
+ */
+# define GUARD_LABEL_MAX 96
+
+static const char *guard_label(char *buffer, size_t capacity,
+                               const char *casename, const char *property)
+{
+    if (buffer == NULL || capacity == 0)
+        return "guard: <no label buffer>";
+
+    snprintf(buffer, capacity, "guard %s: %s", casename, property);
+    return buffer;
+}
+
+/*
+ * `error` means the harness broke and says nothing about num.c; `signo` names
+ * the signal that killed the child, which is the whole diagnosis when a guard
+ * page was touched; `completed` -- exited normally with status 0, NOT merely
+ * "was not signalled" -- is the verdict each case is stated in terms of, and it
+ * is spelled that way so it means the same under the opt-in
+ * -fsanitize=address configuration, where a fault becomes a report and a
+ * non-zero exit rather than a signal.
+ */
+static int guard_verdict_completed(const char *casename,
+                                   const struct param_guard_verdict *verdict)
+{
+    char label[GUARD_LABEL_MAX];
+    int ret = 1, test;
+
+    TEST_ASSERT_INT_EQ(guard_label(label, sizeof label, casename, "harness"),
+                       verdict->error, 0);
+    ret &= test;
+    TEST_ASSERT_INT_EQ(guard_label(label, sizeof label, casename,
+                                   "killed by signal"),
+                       verdict->signo, 0);
+    ret &= test;
+    TEST_ASSERT_INT_EQ(guard_label(label, sizeof label, casename,
+                                   "completed normally"),
+                       verdict->completed, 1);
+    ret &= test;
+
+    return ret;
+}
+
+/*
+ * The descriptor invariant a SETTER owes, which is not param_identical()'s.  A
+ * setter writes param->return_size by contract (num.c:179), so the whole
+ * representation is expected to differ; what must survive is everything else.
+ * The four members are compared individually and the verdict is carried in the
+ * record's param_unchanged field, which the parent asserts as 1.
+ */
+static int guard_descriptor_survived(const OSSL_PARAM *param,
+                                     const OSSL_PARAM *before)
+{
+    return param->key == before->key
+           && param->data_type == before->data_type
+           && param->data == before->data
+           && param->data_size == before->data_size;
+}
+
+/*
+ * Three times sizeof(int), so a sizeof(int) source leaves twice its own width
+ * to pad and the correct offset (src.size) and the reverted one
+ * (dest.size - src.size) land in different places -- at src.size == dest.size / 2
+ * they would coincide and the case would prove nothing.
+ */
+# define SET_GUARD_WIDE_BYTES (3 * sizeof(int))
+
+/*
+ * The over-wide destination, at whichever edge the caller placed it.  A body
+ * runs in the forked child, so it neither asserts nor prints, and it seeds its
+ * own fixture there: the mapping is MAP_PRIVATE, so nothing it writes is visible
+ * to the parent or to a later child, which is what keeps the cases independent
+ * of one another and of their order.
+ */
+static void guard_set_wide(struct param_guard_record *record,
+                           unsigned char *dest)
+{
+    OSSL_PARAM param;
+    OSSL_PARAM before;
+
+    if (dest == NULL || !param_fill_sentinel(dest, SET_GUARD_WIDE_BYTES)) {
+        record->rc = PARAM_GUARD_RC_UNBUILT;
+        return;
+    }
+
+    param_build(&param, OSSL_PARAM_INTEGER, dest, SET_GUARD_WIDE_BYTES);
+    param_snapshot(&before, &param);
+    record->rc = provnum_set_int(&param, 5);
+    record->return_size = param.return_size;
+    record->param_unchanged = guard_descriptor_survived(&param, &before);
+    record->nbytes = SET_GUARD_WIDE_BYTES;
+    memcpy(record->bytes, dest, SET_GUARD_WIDE_BYTES);
+}
+
+static void guard_body_set_dest_high_edge(struct param_guard_record *record,
+                                          const struct param_guard *guard)
+{
+    guard_set_wide(record, param_guard_at_high(guard, SET_GUARD_WIDE_BYTES));
+}
+
+static void guard_body_set_dest_low_edge(struct param_guard_record *record,
+                                         const struct param_guard *guard)
+{
+    guard_set_wide(record, param_guard_at_low(guard, SET_GUARD_WIDE_BYTES));
+}
+
+/*
+ * A ZERO-CAPACITY DESTINATION WHOSE POINTER IS NOT DEREFERENCEABLE.  guard->high
+ * is the first byte of the upper protected page, so this fixture is a valid,
+ * non-null pointer that cannot be read or written -- which is exactly the shape
+ * that turns "the zero-capacity path does not touch the destination" from a
+ * reading of the source into an assertion.  A source of sizeof(size_t) bytes
+ * cannot be narrowed below one and one is greater than zero, so the documented
+ * answer is PROVNUM_E_TOOBIG with return_size 0.
+ */
+static void guard_body_set_zero_capacity(struct param_guard_record *record,
+                                         const struct param_guard *guard)
+{
+    OSSL_PARAM param;
+    OSSL_PARAM before;
+
+    if (guard->high == NULL
+        || !param_build_empty(&param, OSSL_PARAM_UNSIGNED_INTEGER,
+                              guard->high)) {
+        record->rc = PARAM_GUARD_RC_UNBUILT;
+        return;
+    }
+
+    param_snapshot(&before, &param);
+    record->rc = provnum_set_size_t(&param, (size_t)0);
+    record->return_size = param.return_size;
+    record->param_unchanged = guard_descriptor_survived(&param, &before);
+}
+
+/*
+ * A REFUSAL AT THE EDGE.  One byte of capacity, flush against the protected
+ * page, and a value of 128 -- one past the largest a single byte holds once the
+ * padding-strip rules have reserved the sign bit, which test_set_size_t_capacity()
+ * pins as an ordinary pair.  Here the point is different: the refusal must happen
+ * with nothing written, so the one available byte still holds its sentinel and
+ * the byte above it is unreachable.
+ */
+static void guard_body_set_narrow_refusal(struct param_guard_record *record,
+                                          const struct param_guard *guard)
+{
+    unsigned char *dest = param_guard_at_high(guard, (size_t)1);
+    OSSL_PARAM param;
+    OSSL_PARAM before;
+
+    if (dest == NULL || !param_fill_sentinel(dest, (size_t)1)) {
+        record->rc = PARAM_GUARD_RC_UNBUILT;
+        return;
+    }
+
+    param_build(&param, OSSL_PARAM_UNSIGNED_INTEGER, dest, (size_t)1);
+    param_snapshot(&before, &param);
+    record->rc = provnum_set_size_t(&param, (size_t)128);
+    record->return_size = param.return_size;
+    record->param_unchanged = guard_descriptor_survived(&param, &before);
+    record->nbytes = 1;
+    record->bytes[0] = dest[0];
+}
+
+static int test_set_guarded_boundaries(void)
+{
+    struct param_guard guard;
+    struct param_guard_record *record;
+    struct param_guard_verdict verdict;
+    unsigned char expected[SET_GUARD_WIDE_BYTES];
+    int ret = 1, test;
+
+    /*
+     * Expressibility first, in the same spirit as this file's other gates: the
+     * record hands back a fixed number of bytes, and a case wider than that
+     * would compare a truncated destination.
+     */
+    TEST_ASSERT_INT_EQ("guard setup: wide destination fits the record",
+                       SET_GUARD_WIDE_BYTES <= (size_t)PARAM_GUARD_BYTES, 1);
+    ret &= test;
+
+    /*
+     * The mapping and the shared record are ASSERTED, not probed: a registered
+     * target must not become a vacuous pass because mmap() refused.  Both are
+     * released on every return below, including the early ones.
+     */
+    TEST_ASSERT_INT_EQ("guard setup: mapping established",
+                       param_guard_open(&guard), 1);
+    ret &= test;
+    if (guard.low == NULL)
+        return 0;
+
+    record = param_guard_record_open();
+    TEST_ASSERT_PTR_NOT_NULL("guard setup: shared record", record);
+    ret &= test;
+    if (record == NULL) {
+        param_guard_close(&guard);
+        return 0;
+    }
+
+    /*
+     * THE SELF-TEST, AND IT RUNS FIRST.  It reads the byte immediately below the
+     * writable page, which the protection must make fatal.  A run in which THAT
+     * completes is a run in which the guard pages were not armed, and every
+     * "completed normally" verdict below would be vacuous.  Asserted as
+     * completed == 0 and nothing more: which signal, or whether a sanitizer
+     * turned the fault into an exit status instead, is no part of the claim.
+     */
+    verdict = param_guard_run(param_guard_body_self_test, record, &guard);
+    TEST_ASSERT_INT_EQ("guard selftest: harness", verdict.error, 0);
+    ret &= test;
+    TEST_ASSERT_INT_EQ("guard selftest: protection armed", verdict.completed, 0);
+    ret &= test;
+
+    /*
+     * One expectation for both over-wide cases, because both are the same
+     * conversion: the value in the least significant sizeof(int) bytes and zero
+     * padding above it, laid out for the host's byte order.  Zero and not sign
+     * fill even though 5 is positive anyway -- num.c:175 hardcodes the setter's
+     * source sign to POSITIVE, which is 0x00.
+     */
+    TEST_ASSERT_INT_EQ("guard wide: expectation",
+                       param_expect_zero_padded(expected, sizeof expected,
+                                                (uintmax_t)5, sizeof(int)), 1);
+    ret &= test;
+
+    {
+        verdict = param_guard_run(guard_body_set_dest_high_edge, record, &guard);
+        ret &= guard_verdict_completed("set dest high edge", &verdict);
+        TEST_ASSERT_INT_EQ("guard set dest high edge: rc", record->rc, 1);
+        ret &= test;
+        TEST_ASSERT_SIZE_EQ("guard set dest high edge: return_size",
+                            record->return_size, SET_GUARD_WIDE_BYTES);
+        ret &= test;
+        TEST_ASSERT_SIZE_EQ("guard set dest high edge: bytes recorded",
+                            record->nbytes, sizeof expected);
+        ret &= test;
+        TEST_ASSERT_MEM_EQ("guard set dest high edge: destination bytes",
+                           record->bytes, expected, sizeof expected);
+        ret &= test;
+        TEST_ASSERT_INT_EQ("guard set dest high edge: descriptor",
+                           record->param_unchanged, 1);
+        ret &= test;
+    }
+
+    {
+        verdict = param_guard_run(guard_body_set_dest_low_edge, record, &guard);
+        ret &= guard_verdict_completed("set dest low edge", &verdict);
+        TEST_ASSERT_INT_EQ("guard set dest low edge: rc", record->rc, 1);
+        ret &= test;
+        TEST_ASSERT_SIZE_EQ("guard set dest low edge: return_size",
+                            record->return_size, SET_GUARD_WIDE_BYTES);
+        ret &= test;
+        TEST_ASSERT_SIZE_EQ("guard set dest low edge: bytes recorded",
+                            record->nbytes, sizeof expected);
+        ret &= test;
+        TEST_ASSERT_MEM_EQ("guard set dest low edge: destination bytes",
+                           record->bytes, expected, sizeof expected);
+        ret &= test;
+        TEST_ASSERT_INT_EQ("guard set dest low edge: descriptor",
+                           record->param_unchanged, 1);
+        ret &= test;
+    }
+
+    {
+        verdict = param_guard_run(guard_body_set_zero_capacity, record, &guard);
+        ret &= guard_verdict_completed("set zero capacity", &verdict);
+        TEST_ASSERT_INT_EQ("guard set zero capacity: rc", record->rc,
+                           PROVNUM_E_TOOBIG);
+        ret &= test;
+        TEST_ASSERT_SIZE_EQ("guard set zero capacity: return_size",
+                            record->return_size, (size_t)0);
+        ret &= test;
+        TEST_ASSERT_INT_EQ("guard set zero capacity: descriptor",
+                           record->param_unchanged, 1);
+        ret &= test;
+    }
+
+    {
+        verdict = param_guard_run(guard_body_set_narrow_refusal, record, &guard);
+        ret &= guard_verdict_completed("set narrow refusal", &verdict);
+        TEST_ASSERT_INT_EQ("guard set narrow refusal: rc", record->rc,
+                           PROVNUM_E_TOOBIG);
+        ret &= test;
+        TEST_ASSERT_SIZE_EQ("guard set narrow refusal: return_size",
+                            record->return_size, (size_t)1);
+        ret &= test;
+        TEST_ASSERT_SIZE_EQ("guard set narrow refusal: bytes recorded",
+                            record->nbytes, (size_t)1);
+        ret &= test;
+        TEST_ASSERT_UINT_EQ("guard set narrow refusal: destination untouched",
+                            record->bytes[0], PARAM_SENTINEL_BYTE);
+        ret &= test;
+        TEST_ASSERT_INT_EQ("guard set narrow refusal: descriptor",
+                           record->param_unchanged, 1);
+        ret &= test;
+    }
+
+    param_guard_record_close(record);
+    param_guard_close(&guard);
+
+    return ret;
+}
+#endif                          /* LIBPROV_TEST_GUARD_PAGES */

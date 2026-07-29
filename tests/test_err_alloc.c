@@ -124,10 +124,14 @@
  * ran -- is asserted rather than assumed.
  *
  * NO LIBCRYPTO AND NO RUNNING PROVIDER.  The core handle, the stubs and the
- * dispatch table all come from tests/mock_core.h, which builds them by hand;
- * <openssl/params.h> is never included and no libcrypto entry point is ever
- * called.  The accessors err.c uses to unpack a dispatch entry expand to
- * static inline definitions, so nothing has to be linked for them either.
+ * dispatch table all come from tests/mock_core.h, which builds them by hand,
+ * and no libcrypto entry point is ever called.  The accessors err.c uses to
+ * unpack a dispatch entry expand to static inline definitions, so nothing has
+ * to be linked for them either.  <openssl/params.h> is not included by this
+ * file, although prov/err.h reaches it transitively via
+ * <openssl/core_dispatch.h> and <openssl/indicator.h>; that is the project
+ * header's own include graph, it only declares the OSSL_PARAM_ families, and a
+ * declaration links nothing.
  *
  * ON SANITIZERS.  AddressSanitizer supplies its own malloc, so the interaction
  * with --wrap has to be verified rather than assumed on any given toolchain:

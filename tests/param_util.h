@@ -6,9 +6,15 @@
 /*
  * OSSL_PARAM fixtures for the libprov numeric tests: descriptors built BY HAND
  * over test-owned storage.  OSSL_PARAM needs no constructor, being a plain
- * public struct whose five members <openssl/core.h> fixes, and
- * <openssl/params.h> is never included -- its OSSL_PARAM_get_*, set_* and
- * construct_* families are the libcrypto functions provnum_ replaces.
+ * public struct whose five members <openssl/core.h> fixes.  Its OSSL_PARAM_get_*,
+ * set_* and construct_* families are the libcrypto functions provnum_ replaces
+ * and not one of them is ever called; <openssl/params.h> is neither included
+ * here nor reached from here, prov/num.h pulling in only <openssl/core.h>, so
+ * it is genuinely absent from both translation units that include this header.
+ * (The five tests that include prov/err.h instead DO reach it transitively --
+ * through <openssl/core_dispatch.h> and <openssl/indicator.h> -- which is why
+ * the suite-wide rule is stated as "never called" rather than "never
+ * included"; see tests/testutil.h.)
  *
  * Byte order is a variable, not an assumption: every helper takes a byte's
  * SIGNIFICANCE and computes the raw index for the running host, and a fixture
@@ -609,5 +615,413 @@ static PARAMUTIL_MAYBE_UNUSED int param_identical(const OSSL_PARAM *param,
 
     return memcmp(param, snapshot, sizeof *param) == 0;
 }
+
+#ifdef LIBPROV_TEST_GUARD_PAGES
+/*
+ * ===========================================================================
+ * THE PROTECTED-BOUNDARY ORACLE
+ * ===========================================================================
+ * A deterministic observable for the conversions' MEMORY SAFETY, available
+ * under the mandated flagless command rather than only under an opt-in
+ * sanitizer.
+ *
+ * WHY IT IS NEEDED.  Several plausible single-token defects in num.c change no
+ * return code and no destination value for any input; their whole effect is an
+ * access one byte outside a buffer.  Three are known concretely, each the
+ * reverse of a repair the library carries:
+ *
+ *   - dropping "|| param->data_size == 0" from paramsign()'s guard makes it
+ *     compute data_size - 1, wrap, and read the byte BEFORE the source;
+ *   - relaxing the padding-strip loop's bound from > to >= lets one extra
+ *     iteration evaluate rule (b) one byte before the source;
+ *   - restoring the padding offset to dest.size - src.size writes past the end
+ *     of a destination narrower than twice the source.
+ *
+ * An exactly-sized automatic buffer makes those accesses land outside a
+ * distinct object, which is enough for AddressSanitizer and nothing else: in an
+ * ordinary build the read returns whatever byte happens to be adjacent and the
+ * answer is usually still correct.  MEASURED: with the first defect
+ * reintroduced, the whole suite stayed green.  A guard page turns the same
+ * access into a signal, on every run, with no extra build flag.
+ *
+ * HOW IT WORKS.  Three pages are mapped and the OUTER TWO are made PROT_NONE,
+ * so the middle page is writable and both of its edges are cliffs: an access
+ * one byte below `low` or at or above `high` faults.  A fixture placed flush
+ * against an edge therefore has a hardware bounds check on that side.  Because
+ * a fault would otherwise kill the test program, each fixture runs in a FORKED
+ * CHILD: the child records what it observed into a shared page and _exit(0)s,
+ * and the PARENT does the asserting -- both that the child completed normally
+ * and that the recorded values are exactly the documented ones.  A fault is
+ * therefore reported as an ordinary self-diagnosing assertion failure naming
+ * the case, not as a mysteriously dead test binary.
+ *
+ * IT CANNOT MANUFACTURE A FAILURE.  The repaired library reads and writes only
+ * inside the objects it was given, at any capacity, so there is nothing at
+ * either edge for it to touch and every guarded case answers exactly as its
+ * unguarded twin does.  param_guard_body_self_test() is the proof that the
+ * protection is actually armed: it deliberately reads one byte below `low`, and
+ * a run in which THAT completes normally means the mechanism is broken and is
+ * asserted as a failure.
+ *
+ * WHY IT LIVES IN THIS HEADER.  The suite's headers are fixed at three, so a
+ * fourth may not be added; and this oracle is for the numeric conversions,
+ * whose fixtures this header already owns.  It is nevertheless compiled ONLY
+ * into the two targets that define LIBPROV_TEST_GUARD_PAGES -- the numeric
+ * ones -- so no other test's process or memory behaviour is disturbed by it.
+ * Each target is still its own process with no shared state, so `ctest -j N`
+ * remains safe.  The allocator interposer and the abort harness stay file-local
+ * to tests/test_err_alloc.c and tests/test_err_death.c respectively, for the
+ * same reason: confine a mechanism with global effects to the executables that
+ * need it.
+ *
+ * THE INCLUDING FILE MUST SELECT THE FEATURE-TEST LEVEL ITSELF, before its
+ * first #include, because a feature-test macro decides which declarations the C
+ * library's headers make visible and comes too late once any of them has been
+ * processed.  _DEFAULT_SOURCE rather than a _POSIX_C_SOURCE level, because
+ * MAP_ANONYMOUS is not a POSIX flag at all -- it is a Linux and BSD extension,
+ * so asking only for POSIX would not necessarily reveal it.  MEASURED on this
+ * host: glibc declares mmap(), mprotect(), munmap(), fork(), waitpid() and
+ * sysconf() and defines MAP_ANONYMOUS under a bare -std=c99 with no macro at
+ * all, so the requirement buys portability rather than fixing anything here.
+ * The check below turns a C library that does gate them into one diagnosable
+ * compile error naming the cause, rather than an obscure cascade.
+ */
+
+# include <errno.h>
+# include <stdio.h>
+# include <unistd.h>
+# include <sys/mman.h>
+# include <sys/wait.h>
+
+# if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
+/* The older BSD spelling of the same flag. */
+#  define MAP_ANONYMOUS MAP_ANON
+# endif
+
+# if !defined(MAP_ANONYMOUS)
+#  error "LIBPROV_TEST_GUARD_PAGES needs MAP_ANONYMOUS: define a feature-test macro (_DEFAULT_SOURCE, or _BSD_SOURCE on an older glibc) before this file's first #include"
+# endif
+
+/*
+ * How many destination bytes a guarded case may hand back for byte-level
+ * comparison.  Larger than any destination in the suite, and fixed so the
+ * shared record has a size the mapping can be made from.
+ */
+# define PARAM_GUARD_BYTES 64
+
+/*
+ * A writable region with a PROT_NONE page on either side.  `low` is its first
+ * byte and `high` is ONE PAST its last, so `low[-1]` and `high[0]` are both
+ * protected and `high - width` is the flush high-edge placement for a
+ * width-byte object.
+ */
+struct param_guard {
+    unsigned char *map;         /* the whole three-page mapping */
+    size_t maplen;
+    unsigned char *low;
+    unsigned char *high;
+};
+
+/*
+ * Everything one guarded call revealed, written by the child into shared
+ * memory and read by the parent.  Plain scalars and a byte array, so it needs
+ * no more of the shared mapping than sizeof itself.
+ */
+struct param_guard_record {
+    int rc;
+    size_t uvalue;
+    int ivalue;
+    size_t return_size;
+    int param_unchanged;
+    size_t nbytes;
+    unsigned char bytes[PARAM_GUARD_BYTES];
+};
+
+/*
+ * How a guarded child ended.  `completed` is the one predicate the parent
+ * asserts for a case that must not fault: it is true only for a normal exit
+ * with status 0.  It is deliberately not "was not killed by a signal", because
+ * AddressSanitizer converts the fault into a report and a NON-ZERO EXIT rather
+ * than a signal, and the predicate has to mean the same thing in both builds.
+ * `signo` and `exitcode` are carried for the failure message, and `error`
+ * distinguishes a broken harness -- fork() or waitpid() itself failing -- from
+ * a verdict about the library.
+ */
+struct param_guard_verdict {
+    int completed;
+    int exitcode;
+    int signo;
+    int error;
+};
+
+/*
+ * A guarded fixture: it may read and write only within [low, high), records
+ * what it observed, and must not assert or print -- the parent owns both.
+ */
+typedef void param_guard_body(struct param_guard_record *record,
+                              const struct param_guard *guard);
+
+static PARAMUTIL_MAYBE_UNUSED size_t param_guard_pagesize(void)
+{
+    long value = sysconf(_SC_PAGESIZE);
+
+    return value <= 0L ? (size_t)4096 : (size_t)value;
+}
+
+/*
+ * Whether a flush HIGH-EDGE placement can also be correctly aligned for an
+ * object needing `align` bytes of alignment.  `high` is page aligned, so
+ * high - width is width-aligned exactly when the alignment divides the page
+ * size -- true for every power-of-two alignment on every page size a hosted
+ * implementation with mmap() uses.  Consulted BEFORE a fixture is built, in the
+ * same spirit as this suite's other expressibility gates, so that an
+ * inexpressible placement is reported rather than silently mis-aligned.
+ */
+static PARAMUTIL_MAYBE_UNUSED int param_guard_align_ok(size_t align)
+{
+    return align != 0 && param_guard_pagesize() % align == 0;
+}
+
+/*
+ * Map the three pages and protect the outer two.  The writable page is zeroed,
+ * so a fixture that seeds only part of it still starts from a known state.
+ * Returns 1 on success, 0 having mapped nothing on failure; the caller must
+ * assert the result, since every guarded case depends on it.
+ */
+static PARAMUTIL_MAYBE_UNUSED int param_guard_open(struct param_guard *guard)
+{
+    size_t page;
+    unsigned char *base;
+
+    if (guard == NULL)
+        return 0;
+
+    guard->map = NULL;
+    guard->maplen = 0;
+    guard->low = NULL;
+    guard->high = NULL;
+
+    page = param_guard_pagesize();
+    base = (unsigned char *)mmap(NULL, page * 3, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (base == (unsigned char *)MAP_FAILED)
+        return 0;
+
+    /*
+     * Both cliffs, established before the region is advertised: if either
+     * mprotect() fails the whole mapping is released and the caller is told
+     * nothing was set up, rather than being handed a half-protected region
+     * whose guarantees would be silently weaker than they look.
+     */
+    if (mprotect(base, page, PROT_NONE) != 0
+        || mprotect(base + page * 2, page, PROT_NONE) != 0) {
+        (void)munmap(base, page * 3);
+        return 0;
+    }
+
+    memset(base + page, 0, page);
+
+    guard->map = base;
+    guard->maplen = page * 3;
+    guard->low = base + page;
+    guard->high = base + page * 2;
+    return 1;
+}
+
+static PARAMUTIL_MAYBE_UNUSED void param_guard_close(struct param_guard *guard)
+{
+    if (guard == NULL || guard->map == NULL)
+        return;
+
+    (void)munmap(guard->map, guard->maplen);
+    guard->map = NULL;
+    guard->maplen = 0;
+    guard->low = NULL;
+    guard->high = NULL;
+}
+
+/*
+ * The flush placements.  Each returns NULL when the request does not fit the
+ * writable page, so a caller that asserts non-null cannot proceed with a
+ * fixture that is not against the edge it believes it is against.
+ */
+static PARAMUTIL_MAYBE_UNUSED unsigned char *
+param_guard_at_low(const struct param_guard *guard, size_t width)
+{
+    if (guard == NULL || guard->low == NULL)
+        return NULL;
+    if (width > (size_t)(guard->high - guard->low))
+        return NULL;
+
+    return guard->low;
+}
+
+static PARAMUTIL_MAYBE_UNUSED unsigned char *
+param_guard_at_high(const struct param_guard *guard, size_t width)
+{
+    if (guard == NULL || guard->high == NULL)
+        return NULL;
+    if (width > (size_t)(guard->high - guard->low))
+        return NULL;
+
+    return guard->high - width;
+}
+
+/*
+ * WHICH EDGE A SOURCE MUST SIT AGAINST, and why it is not simply "the low one".
+ * The over-run this places a cliff in front of is num.c's srcmsb arithmetic
+ * stepping ONE PLACE BEYOND the most significant byte, and which direction that
+ * is depends on byte order:
+ *
+ *   LITTLE: srcmsb is size - 1 and srcmsb2lsb is -1 (num.c:79-80), so a step
+ *           beyond the most significant end lands at index -1 -- BELOW the
+ *           object -- and a size of zero makes srcmsb wrap to SIZE_MAX, which
+ *           is the same byte again.  The object goes flush against `low`.
+ *   BIG:    srcmsb is 0 and srcmsb2lsb is 1, so the step lands at index 1 and,
+ *           for a one-byte source, one past the end; a size of zero reads index
+ *           0, also one past the end.  The object goes flush against `high`.
+ *
+ * A width of zero is meaningful and correct here: an empty source still has an
+ * address, and `low` (or `high`) is exactly the address whose over-run byte is
+ * protected.  Hard-coding one edge would make every such case vacuous on the
+ * other kind of host, which is the byte-order neutrality the rest of this
+ * header exists to keep.
+ */
+static PARAMUTIL_MAYBE_UNUSED unsigned char *
+param_guard_at_msb_edge(const struct param_guard *guard, size_t width)
+{
+    return param_host_endian() == PARAM_ENDIAN_LITTLE
+           ? param_guard_at_low(guard, width)
+           : param_guard_at_high(guard, width);
+}
+
+/*
+ * The return code a guarded body reports when it could not build its fixture.
+ * Distinct from 1 and from all four PROVNUM_E_ codes, so a case whose fixture
+ * was refused fails its exact-return-code assertion with a value that names the
+ * cause instead of degrading into a different, passing, case.
+ */
+# define PARAM_GUARD_RC_UNBUILT (-99)
+
+/*
+ * The shared record.  MAP_SHARED is what makes the child's writes visible to
+ * the parent after it exits; an ordinary object would be copied on write and
+ * the parent would read its own untouched copy.
+ */
+static PARAMUTIL_MAYBE_UNUSED struct param_guard_record *param_guard_record_open(void)
+{
+    void *page = mmap(NULL, sizeof(struct param_guard_record),
+                      PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+
+    if (page == MAP_FAILED)
+        return NULL;
+
+    memset(page, 0, sizeof(struct param_guard_record));
+    return (struct param_guard_record *)page;
+}
+
+static PARAMUTIL_MAYBE_UNUSED void
+param_guard_record_close(struct param_guard_record *record)
+{
+    if (record != NULL)
+        (void)munmap(record, sizeof *record);
+}
+
+/*
+ * Run one fixture in a child and report how it ended.
+ *
+ * The record is cleared here rather than by the body, so a field the body never
+ * writes reads as zero rather than as the previous case's value.  Streams are
+ * flushed BEFORE the fork, so nothing already buffered by the parent is
+ * duplicated by the child, and the child leaves through _exit() rather than
+ * exit(), so it runs no atexit handler and flushes no stream of its own.
+ */
+static PARAMUTIL_MAYBE_UNUSED struct param_guard_verdict
+param_guard_run(param_guard_body *body, struct param_guard_record *record,
+                const struct param_guard *guard)
+{
+    struct param_guard_verdict verdict;
+    pid_t child;
+    int status = 0;
+
+    verdict.completed = 0;
+    verdict.exitcode = -1;
+    verdict.signo = 0;
+    verdict.error = 0;
+
+    if (body == NULL || record == NULL || guard == NULL) {
+        verdict.error = 1;
+        return verdict;
+    }
+
+    memset(record, 0, sizeof *record);
+    fflush(NULL);
+
+    child = fork();
+    if (child < 0) {
+        verdict.error = 1;
+        return verdict;
+    }
+    if (child == 0) {
+        body(record, guard);
+        _exit(0);
+    }
+
+    while (waitpid(child, &status, 0) != child) {
+        /*
+         * EINTR is the only way this loop can be reached, no other child
+         * existing to be reported; anything else is a broken harness.
+         */
+        if (errno != EINTR) {
+            verdict.error = 1;
+            return verdict;
+        }
+    }
+
+    if (WIFEXITED(status)) {
+        verdict.exitcode = WEXITSTATUS(status);
+        verdict.completed = verdict.exitcode == 0;
+    } else if (WIFSIGNALED(status)) {
+        verdict.signo = WTERMSIG(status);
+    } else {
+        verdict.error = 1;
+    }
+
+    return verdict;
+}
+
+/*
+ * THE HARNESS SELF-TEST, and the reason every other guarded assertion means
+ * anything.  It reads the byte immediately below the writable page, which the
+ * protection above must make fatal.  The parent asserts that this body did NOT
+ * complete: a run where it did is a run where the guard pages were not armed,
+ * and every "no fault occurred" verdict in the file would be vacuous.
+ *
+ * `volatile` so the read cannot be discarded as dead, and the value is stored
+ * into the record so it is also used.
+ *
+ * THIS BODY SILENCES ITS OWN STDERR, and it is the only one that does.  Its
+ * fault is the expected outcome, and under the opt-in -fsanitize=address
+ * configuration an expected fault prints a two-kilobyte report that would land
+ * in the CTest log of a passing run -- the same reasoning as
+ * tests/test_err_death.c's redirect.  Doing it inside the body confines it to
+ * this child, so every other body keeps its diagnostics: there, a report is
+ * evidence of a real defect and losing it would be losing the diagnosis.  The
+ * freopen() result is consumed because GCC declares it warn_unused_result, and
+ * a failed redirect is not worth acting on -- the fault below is the point of
+ * the function either way.
+ */
+static PARAMUTIL_MAYBE_UNUSED void
+param_guard_body_self_test(struct param_guard_record *record,
+                           const struct param_guard *guard)
+{
+    const volatile unsigned char *below = guard->low - 1;
+
+    (void)freopen("/dev/null", "w", stderr);
+
+    record->ivalue = (int)*below;
+    record->rc = 1;
+}
+#endif                          /* LIBPROV_TEST_GUARD_PAGES */
 
 #endif                          /* LIBPROV_TESTS_PARAM_UTIL_H */

@@ -36,10 +36,21 @@
  * __FILE__ is whatever path the compiler was handed, so it is relative to the
  * build's working directory.
  *
- * No allocation, no file, no environment, no fork and no libcrypto: libprov's
- * provnum_ family exists precisely to replace libcrypto's OSSL_PARAM_get_ and
- * OSSL_PARAM_set_ helpers, so a test that called those would be measuring
- * upstream OpenSSL.  <openssl/params.h> must not be included by any test.
+ * THIS HEADER ITSELF allocates nothing, opens no file, reads no environment
+ * variable, forks no process and includes no OpenSSL header at all: the four
+ * includes below are the whole of its dependencies.
+ *
+ * The suite-wide rule it exists to serve is about CALLS, not includes:
+ * libprov's provnum_ family exists precisely to replace libcrypto's
+ * OSSL_PARAM_get_, OSSL_PARAM_set_ and OSSL_PARAM_construct_ helpers, so a
+ * test that called one of those would be measuring upstream OpenSSL instead of
+ * libprov.  NO TEST CALLS ONE, and no test includes <openssl/params.h>
+ * directly.  It is nevertheless reached transitively by the five tests that
+ * include prov/err.h, whose <openssl/core_dispatch.h> pulls in
+ * <openssl/indicator.h>, which includes it -- the project header's own include
+ * graph, not a choice any test makes.  A declaration links nothing, which is
+ * why every test binary's dynamic dependencies are still the vDSO, libc and
+ * the loader alone.
  *
  * include/prov/num.h spells its error codes unparenthesised
  * ("#define PROVNUM_E_TOOBIG -2"), so every macro parameter below is used

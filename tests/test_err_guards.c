@@ -126,8 +126,12 @@
  * not compute.
  *
  * Nothing here calls into libcrypto.  The core handle, the callbacks and the
- * dispatch tables all come from tests/mock_core.h, <openssl/params.h> is never
- * included, and no provider is initialised.
+ * dispatch tables all come from tests/mock_core.h, and no provider is
+ * initialised.  <openssl/params.h> is not included by this file, but prov/err.h
+ * reaches it transitively by way of <openssl/core_dispatch.h> and
+ * <openssl/indicator.h> -- the project header's own include graph.  It only
+ * declares the OSSL_PARAM_ families, which are libcrypto functions; not one of
+ * them is called, here or anywhere in the suite.
  */
 
 #include "testutil.h"

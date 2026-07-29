@@ -9,11 +9,13 @@
 # executables:
 #
 #   test_num_get            provnum_get_size_t() / provnum_get_int():
-#                           contract, boundaries, widths, signedness and
-#                           error-code precedence
+#                           contract, boundaries, widths, signedness,
+#                           error-code precedence and -- on POSIX hosts --
+#                           guarded memory-safety boundaries
 #   test_num_set            provnum_set_size_t() / provnum_set_int():
-#                           contract, capacity edges, byte-level output and
-#                           the return_size-on-every-path invariant
+#                           contract, capacity edges, byte-level output, the
+#                           return_size-on-every-path invariant and -- on POSIX
+#                           hosts -- guarded memory-safety boundaries
 #   test_err_handle         proverr_new_handle() dispatch resolution plus
 #                           duplication and free semantics
 #   test_err_raise          argument-forwarding fidelity, ERR_raise /
@@ -174,14 +176,75 @@ function(libprov_add_test name)
 endfunction()
 
 # ---------------------------------------------------------------------------
+# The protected-boundary oracle for the two numeric targets (POSIX hosts)
+# ---------------------------------------------------------------------------
+# Three of num.c's guards exist only to keep an index inside its buffer, and
+# removing any of them changes no return code and no destination value for any
+# input: paramsign()'s zero-size guard (num.c:24-25), the padding-strip loop's
+# bound (num.c:100) and the padding offset (num.c:132).  MEASURED: with the
+# first of those reintroduced, all eight targets stayed green.  Their only
+# observable is an access one byte outside an object, and the mandated command
+# passes no sanitizer flag, so without a mechanism here they are untested under
+# the command that matters.
+#
+# LIBPROV_TEST_GUARD_PAGES switches on param_util.h's oracle, which maps three
+# pages, makes the outer two PROT_NONE, places a fixture flush against an edge
+# and runs it in a forked child so the resulting fault is reported as a named
+# assertion failure instead of killing the test binary.  It changes NO existing
+# case: it adds one group to each numeric target and leaves everything else
+# byte for byte as it was.
+#
+# One defect is deliberately NOT claimed here.  Reverting the zero-capacity
+# clamp at num.c:99 makes the strip loop read one byte below provnum_set_*'s own
+# `src` parameter -- inside the library function's stack frame, which a test owns
+# no part of and can put no page against, so whether that revert changes any
+# answer is decided by a byte no fixture controls (measured here: it does, 200
+# runs out of 200, which is a fact about this host and not a mechanism).  The two
+# numeric targets pin that input's full documented answer in every build, the
+# guarded groups pin the neighbouring property that a zero-capacity call touches
+# no destination byte, and the read itself is detected by the opt-in
+# -fsanitize=address configuration the specification names for that purpose and
+# equally forbids making a default.  tests/test_num_set.c records the reasoning
+# and the alternatives that were tried and rejected.
+#
+# It rides on the two EXISTING registrations through a computed variable rather
+# than through extra libprov_add_test() calls, because the registered target
+# count is part of this suite's shape: eight targets, named in the header above,
+# and this mechanism is a property of two of them rather than a target of its
+# own.  The definition is applied per target, so the six error targets are
+# untouched and neither the allocator interposer nor the abort harness -- each
+# file-local to its own executable -- shares a process with it.
+#
+# mmap(), mprotect(), fork() and waitpid() are POSIX, so on a host without them
+# the definition is simply not made: the two targets are still registered and
+# still run, one group lighter.  That mirrors how test_err_death and
+# test_err_alloc are handled -- never registered and skipped, never registered
+# and allowed to fail -- so there is still no DISABLED property, no
+# SKIP_RETURN_CODE and no exclusion filter anywhere in this file.  The numeric
+# sources set their own feature-test level before their first #include, and
+# param_util.h fails the compile with a diagnostic naming the cause if a C
+# library still hides MAP_ANONYMOUS.
+set(LIBPROV_NUM_DEFS "")
+if(UNIX)
+  list(APPEND LIBPROV_NUM_DEFS LIBPROV_TEST_GUARD_PAGES)
+endif()
+
+# ---------------------------------------------------------------------------
 # The four straightforward targets
 # ---------------------------------------------------------------------------
 # Nothing special: one source each, the project's default flags, and err.c and
 # num.c reached through the libprov archive.  Each target is named after its
 # source's basename so that ctest -R test_num_get and ctest -R "test_num_.*"
 # select what a reader expects them to.
-libprov_add_test(test_num_get     SOURCES test_num_get.c)
-libprov_add_test(test_num_set     SOURCES test_num_set.c)
+#
+# The two numeric targets carry ${LIBPROV_NUM_DEFS} from the block above, which
+# is empty on a non-POSIX host; libprov_add_test() applies DEFS only when the
+# list is non-empty, so an empty one is a genuine no-op rather than a configure
+# error.
+libprov_add_test(test_num_get     SOURCES test_num_get.c
+                                  DEFS ${LIBPROV_NUM_DEFS})
+libprov_add_test(test_num_set     SOURCES test_num_set.c
+                                  DEFS ${LIBPROV_NUM_DEFS})
 libprov_add_test(test_err_handle  SOURCES test_err_handle.c)
 libprov_add_test(test_err_raise   SOURCES test_err_raise.c)
 

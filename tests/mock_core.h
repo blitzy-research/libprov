@@ -16,9 +16,18 @@
  * Reset at the START of every case, exercise, then read mock_core_obs -- never
  * in the expression that triggers it, since C leaves argument evaluation order
  * unspecified.  Every object has internal linkage, so each test executable
- * owns its own state.  No libcrypto is linked: the accessors err.c calls
- * expand to static inline definitions, and <openssl/params.h>, whose
- * OSSL_PARAM_* families are libcrypto functions, is deliberately absent.
+ * owns its own state.
+ *
+ * NO LIBCRYPTO IS LINKED OR CALLED.  The accessors err.c uses to unpack a
+ * dispatch entry expand to static inline definitions, so nothing has to be
+ * linked for them.  This header does not include <openssl/params.h>, but
+ * including prov/err.h below reaches it anyway --
+ * prov/err.h -> <openssl/core_dispatch.h> -> <openssl/indicator.h> ->
+ * <openssl/params.h> -- which is the project header's own include graph rather
+ * than anything chosen here.  Those OSSL_PARAM_* families are libcrypto
+ * functions and a declaration of one links nothing; the binding property is
+ * that NONE OF THEM IS EVER CALLED, by this header or by any test that
+ * includes it.
  */
 
 #include <stdarg.h>

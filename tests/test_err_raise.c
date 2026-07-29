@@ -75,9 +75,71 @@
  * (include/prov/err.h:50-52), so an argument with side effects would be
  * evaluated three times.  Every invocation below passes a plain variable.
  *
- * NO LIBCRYPTO: the core is mock_core.h's hand-built one and
- * <openssl/params.h> is never included.
+ * NO LIBCRYPTO IS CALLED OR LINKED: the core is mock_core.h's hand-built one,
+ * the accessors err.c uses expand to static inline definitions, and no function
+ * declared by any <openssl/...> header is ever called.  <openssl/params.h> is
+ * not included directly by this file, but it does arrive transitively --
+ * prov/err.h includes <openssl/core_dispatch.h>, which includes
+ * <openssl/indicator.h>, which includes it.  That is the project header's own
+ * include graph rather than a choice made here, and it only DECLARES libcrypto
+ * functions: a linked test binary's dynamic dependencies remain the vDSO, libc
+ * and the loader alone.  What matters is that none of those functions -- the
+ * OSSL_PARAM_get_*, set_* and construct_* families the provnum_ family exists
+ * to replace -- is ever called.
+ *
+ * <openssl/err.h> IS INCLUDED DELIBERATELY, and first: it is what seeds
+ * ERR_put_error() so the negative compile-time contract below has something to
+ * be about.  It is a header, so including it links nothing either.
  */
+
+/*
+ * ---------------------------------------------------------------------------
+ * SEEDING THE NEGATIVE COMPILE-TIME CONTRACT -- THIS BLOCK MUST STAY FIRST
+ * ---------------------------------------------------------------------------
+ * include/prov/err.h:43 undefines ERR_put_error(), and the comment at
+ * include/prov/err.h:38-41 says why: <openssl/err.h> may have been included,
+ * its error-recording macros are thrown away, and ERR_put_error() is
+ * deliberately NOT recreated because it is deprecated.  That is a property of
+ * the header no runtime assertion can express -- there is no symbol to look for
+ * and no value to compare -- so it is asserted at the foot of this block.
+ *
+ * AN #undef CAN ONLY BE OBSERVED IF SOMETHING WAS DEFINED FIRST.  prov/err.h
+ * includes <stdint.h>, <openssl/core.h> and <openssl/core_dispatch.h> and
+ * nothing else, so on its own it never sees an ERR_put_error() to remove: a
+ * bare "#ifdef ERR_put_error / #error" placed after it would hold just as well
+ * with include/prov/err.h:43 deleted, and would therefore assert nothing.  The
+ * macro is seeded here, BEFORE the first include that can reach prov/err.h --
+ * mock_core.h reaches it, which is why this block precedes even testutil.h.
+ *
+ * The seed is taken from <openssl/err.h> where that header supplies it, which
+ * is the real situation the #undef exists for.  The fallback is not
+ * hypothetical: upstream wraps its ERR_put_error() in
+ * "#ifndef OPENSSL_NO_DEPRECATED_3_0", so a build that defines that macro --
+ * and any future OpenSSL that finishes removing the deprecated spelling --
+ * supplies no seed at all.  Defining one here means this contract cannot
+ * quietly stop being tested because an upstream header changed.  The
+ * intermediate #error is the positive half: it fires if neither source
+ * defined the macro, which would mean the seed itself had silently failed.
+ *
+ * Verified: with include/prov/err.h:43 removed from a scratch copy of the
+ * header, this translation unit FAILS to compile on the final #error below.
+ */
+#include <openssl/err.h>
+
+#ifndef ERR_put_error
+/*
+ * The fallback seed.  Its replacement text is a deliberately undeclared
+ * identifier: nothing in this file expands ERR_put_error(), so the text is
+ * never evaluated, and if some future edit did expand it the result would be a
+ * compile error naming this macro rather than a silent call.
+ */
+# define ERR_put_error(lib, func, reason, file, line)                       \
+    LIBPROV_TEST_ERR_PUT_ERROR_MUST_NOT_SURVIVE_PROV_ERR_H
+#endif
+
+#ifndef ERR_put_error
+# error "the ERR_put_error seed above did not take; the contract below is void"
+#endif
 
 #include "testutil.h"
 #include "mock_core.h"
@@ -88,16 +150,13 @@
 #include <string.h>
 
 /*
- * The negative compile-time contract.  include/prov/err.h:43 undefines
- * ERR_put_error() and the comment at include/prov/err.h:40-41 says it is
- * deliberately NOT recreated because it is deprecated.  That is a property of
- * the header no runtime assertion can express -- there is no symbol to look
- * for and no value to compare -- so it is asserted here, after every include,
- * where a silent reintroduction would let provider code compile against the
- * legacy API and keep doing so unnoticed.
+ * The negative compile-time contract itself, asserted after every include so
+ * that a silent reintroduction of ERR_put_error() -- which would let provider
+ * code compile against the legacy API and keep doing so unnoticed -- fails the
+ * build here.  It is load-bearing only because of the seed above.
  */
 #ifdef ERR_put_error
-# error "ERR_put_error must be left undefined by prov/err.h:40-43"
+# error "ERR_put_error must be left undefined by prov/err.h:38-43"
 #endif
 
 /*
@@ -105,6 +164,20 @@
  * (include/prov/err.h:47, :49-52) must be present, so that a header change
  * which dropped them fails the build here instead of silently falling through
  * to whatever <openssl/err.h> may have left behind.
+ *
+ * "Present" is all the preprocessor can check, and here it is genuinely not
+ * enough: <openssl/err.h> defines ERR_raise() and ERR_raise_data() of its own,
+ * so this pair of #if tests would hold even if prov/err.h's #undef and
+ * redefinition had done nothing and upstream's macros were still in force.
+ * WHICH definition won is settled at RUNTIME instead, by
+ * test_err_raise_macro() and test_err_raise_data_macro(): both assert the
+ * recorded sequence new_error, set_error_debug, set_error, and only
+ * prov/err.h's comma expression calls those three.  Upstream's expands to
+ * (ERR_new(), ERR_set_debug(...), ERR_set_error), so had it survived this
+ * program would not even link -- no libcrypto is linked -- and could record
+ * nothing if it did.  That is a property those two functions could not
+ * establish before <openssl/err.h> was included above, there having been no
+ * competing definition to displace.
  */
 #if !defined(ERR_raise) || !defined(ERR_raise_data)
 # error "prov/err.h:47-52 must define ERR_raise and ERR_raise_data"

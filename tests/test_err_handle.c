@@ -37,9 +37,13 @@
  * arguments, neither of which asserts anything about its argument (err.c:70,
  * err.c:82).
  *
- * NO LIBCRYPTO.  <openssl/params.h> is absent by design: its OSSL_PARAM_
- * families are libcrypto functions, and nothing here needs an OSSL_PARAM.  The
- * core is mock_core.h's hand-built one throughout.
+ * NO LIBCRYPTO IS CALLED.  The core is mock_core.h's hand-built one
+ * throughout, and nothing here needs an OSSL_PARAM.  This file does not
+ * include <openssl/params.h>, though prov/err.h reaches it transitively
+ * through <openssl/core_dispatch.h> and <openssl/indicator.h>; that graph
+ * belongs to the project header, and it only DECLARES the OSSL_PARAM_
+ * families, which are libcrypto functions.  None of them is ever called, so
+ * this binary's dynamic dependencies remain the vDSO, libc and the loader.
  */
 
 #include "testutil.h"

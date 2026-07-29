@@ -5,11 +5,15 @@
  * nothing but comments may precede it.  A feature-test macro selects which
  * declarations the C library's headers make visible, so defining it after a
  * header had already been processed would come too late to have any effect.
- * _POSIX_C_SOURCE=200809L selects the POSIX.1-2008 feature-test level, the
- * oldest one that guarantees everything used below: fork(), waitpid(), the
- * wait-status macros and _exit().  A glibc host may expose them under a plain
- * -std=c99 build regardless; a stricter C library will not, so this line is
- * what makes the file portable rather than merely lucky.
+ * _POSIX_C_SOURCE=200809L selects the POSIX.1-2008 feature-test level.  That is
+ * not the oldest level that would do: fork(), waitpid(), the wait-status macros
+ * and _exit() have been in POSIX since POSIX.1-1990 and are visible at
+ * _POSIX_C_SOURCE=1.  200809L is chosen because it is the current, universally
+ * available baseline and asking for it costs nothing, not because anything
+ * below needs it.  What the line is FOR is visibility: a glibc host may expose
+ * these declarations under a plain -std=c99 build anyway, and a stricter C
+ * library will not, so defining the macro is what makes the file portable
+ * rather than merely lucky.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -22,7 +26,12 @@
  * (err.c:47, err.c:48, err.c:49).  Where those assertions are live -- which is
  * the default build -- an invalid input does not return an error code, it
  * ABORTS.  This file asserts that the abort really happens, for every one of
- * those inputs.  It is the only file in the suite that forks.
+ * those inputs.  Its harness is file-local and shared with nothing: the only
+ * other place in the suite that forks is param_util.h's protected-boundary
+ * oracle, compiled into the two numeric targets alone, whose subject is num.c's
+ * memory safety rather than err.c's assertions and whose child looks for a
+ * SIGSEGV-class fault rather than SIGABRT.  Neither harness is a candidate for
+ * being folded into the other.
  *
  * The complementary half of the contract belongs to test_err_guards.c: with
  * NDEBUG defined the assertions vanish, the guard at err.c:51-54 becomes
@@ -73,8 +82,12 @@
  * Nothing here links or calls libcrypto.  The core handle and the dispatch
  * tables come from tests/mock_core.h, whose OSSL_CORE_HANDLE is a test-local
  * definition of a type <openssl/core.h> leaves incomplete, and the accessors
- * err.c uses expand to static inline code.  <openssl/params.h>, whose
- * OSSL_PARAM_ families are libcrypto functions, is deliberately absent.
+ * err.c uses expand to static inline code.  <openssl/params.h> is not included
+ * by this file; prov/err.h reaches it transitively through
+ * <openssl/core_dispatch.h> and <openssl/indicator.h>, which is the project
+ * header's own include graph.  The OSSL_PARAM_ families it declares are
+ * libcrypto functions and a declaration links nothing -- none of them is ever
+ * called.
  *
  * DEBUGGING.  This harness forks, so a debugger stops in the PARENT by default
  * and the abort is never seen.  Tell it to follow the child:
