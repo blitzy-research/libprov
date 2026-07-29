@@ -35,9 +35,21 @@
  *     spellings, and <openssl/macros.h> defines OPENSSL_FILE as "" and
  *     OPENSSL_LINE as 0 when OPENSSL_NO_FILENAMES is set, and OPENSSL_FUNC as
  *     "(unknown function)" on a translator that offers neither __func__ nor
- *     __FUNCTION__.  Expectations written in the OpenSSL spellings stay
- *     correct in those builds; hard-coded ones would be a latent failure.  All
- *     three arrive transitively through "prov/err.h" (include/prov/err.h:4-5).
+ *     __FUNCTION__.  Expectations written in the OpenSSL spellings track those
+ *     definitions; hard-coded ones would be a latent failure.  All three
+ *     arrive transitively through "prov/err.h" (include/prov/err.h:4-5).
+ *
+ *     The one thing the spellings cannot rescue is a RELATIONAL claim about
+ *     two lines: with OPENSSL_NO_FILENAMES set, OPENSSL_LINE is the constant
+ *     0 at every call site, so "the second raise's line is greater than the
+ *     first's" is false however it is spelled.  That configuration is not one
+ *     this project builds -- the mandated command passes no -D and nothing in
+ *     the tree defines the macro -- and the two relational assertions in
+ *     test_err_raise_macro() are kept unconditional because they are what
+ *     catches a library forwarding a constant line.  Measured, so that a
+ *     future reader meets a recorded fact rather than a surprise:
+ *     -DOPENSSL_NO_FILENAMES leaves exactly those two assertions failing and
+ *     every other one in this file passing.
  *
  * 2.  OPENSSL_LINE expands AT THE CALL SITE, so its expectation must be
  *     captured on the SAME PHYSICAL LINE as the raise.  One line lower and it
@@ -46,17 +58,42 @@
  *     -- so only that one capture shares a line with its raise, and every such
  *     line is marked so it is not reflowed by a later edit.
  *
- * 3.  Pointer identity of a macro-supplied STRING is only checkable when the
- *     two expansions denote the same object.  C99 6.4.2.2p1 gives __func__ one
- *     object per function, so OPENSSL_FUNC is safe there, but C99 6.4.5p6
- *     leaves it unspecified whether equal string literals share an address.
- *     Nothing here therefore compares a pointer against a bare literal: every
- *     expectation is captured into a variable first.  Each macro case then
- *     PROBES whether two expansions in this translation unit are the same
- *     object and asserts identity only when they are, while asserting CONTENT
- *     unconditionally.  The unconditional half of that guarantee lives in
- *     test_set_error_debug_forwarding(), which passes pointers this file owns
- *     and so needs no probe at all.
+ * 3.  POINTER IDENTITY IS ASSERTED ONLY FOR STRINGS THIS FILE OWNS.  C99
+ *     6.4.5p6 leaves it unspecified whether string literals with the same
+ *     contents are distinct objects, and it leaves that unspecified PER
+ *     OCCURRENCE: an implementation may fold one pair of occurrences and keep
+ *     another pair apart in the same translation unit.  So no run-time probe
+ *     can license the claim either -- observing that two expansions of
+ *     OPENSSL_FILE happen to compare equal says nothing about the different
+ *     pair formed by the expansion this file captured and the expansion
+ *     include/prov/err.h:51 forwarded.  Basing an assertion on that inference
+ *     would make it unsound rather than conditional, and it could fail on a
+ *     conforming implementation that folded the probe's pair and not the
+ *     other.  For the values the compiler and <openssl/macros.h> generate --
+ *     OPENSSL_FILE and OPENSSL_FUNC as they arrive through ERR_raise() and
+ *     ERR_raise_data() -- this file therefore asserts CONTENT and the CALL
+ *     SITE LINE, plus the one pointer property that IS a contract rather than
+ *     an accident of storage: neither macro can expand to a null pointer, so
+ *     a forwarded null is a defect, and it is the one thing content alone
+ *     cannot see (mock_core.h records a null string as "", which is exactly
+ *     what OPENSSL_FILE expands to under OPENSSL_NO_FILENAMES).  This is the
+ *     same policy mock_core.h:150-155 states for its own recorder.
+ *
+ *     Identity of a forwarded string IS asserted, unconditionally and
+ *     soundly, everywhere the pointer belongs to this file and is therefore a
+ *     single known object: the file and function markers in
+ *     test_set_error_debug_forwarding(), the format string in
+ *     test_set_error_forwarding() and both macro cases, and the variadic
+ *     string in test_va_list_traversal().  That is where a library forwarding
+ *     a copy instead of the caller's pointer is caught, and it is caught for
+ *     the SAME err.c function the macros reach: err.c:90-94 has one
+ *     implementation, so pinning its pass-through once pins it everywhere.
+ *     Measured against a mutant that forwards a malloc()ed copy of both
+ *     strings: sixteen assertions in test_set_error_debug_forwarding() fail
+ *     and the run exits non-zero, so asserting content rather than identity
+ *     for the generated values costs no detection power at all.  Nothing here
+ *     compares a pointer against a bare literal in any case: every
+ *     expectation is captured into a variable first.
  *
  * THE HANDLE IS OPAQUE.  struct proverr_functions_st is defined only in
  * err.c:7-12 and include/prov/err.h:58 merely forward-declares it, so nothing
@@ -795,26 +832,21 @@ static int test_va_list_traversal(void)
 static int test_err_raise_macro(void)
 {
   /*
-   * The same-object probes: two expansions of one macro, both in this
-   * function.  For OPENSSL_FUNC == __func__ C99 6.4.2.2p1 guarantees a single
-   * object per function, so the probe is a formality that also covers the
-   * "(unknown function)" fallback; for OPENSSL_FILE == __FILE__ the two are
-   * string literals whose sharing C99 6.4.5p6 leaves unspecified, so the probe
-   * decides at run time whether pointer identity is a checkable property here
-   * at all.  The comparison is between the captured variables and never the
-   * macros directly -- see hazard 3 at the head of this file.
+   * The two position-independent expectations, captured once: OPENSSL_FILE
+   * names the translation unit and OPENSSL_FUNC names this function, so
+   * neither has to share a physical line with a raise -- only the
+   * OPENSSL_LINE capture does.  They are const to make it plain that this one
+   * capture serves every case below, and they are captured into variables
+   * rather than used inline so that no assertion ever compares against a bare
+   * literal.  What they are compared BY is content, not address; hazard 3 at
+   * the head of this file says why an address comparison is not available for
+   * a value this file does not own.
    */
-  const char *file_probe_a = OPENSSL_FILE;
-  const char *file_probe_b = OPENSSL_FILE;
-  const char *func_probe_a = OPENSSL_FUNC;
-  const char *func_probe_b = OPENSSL_FUNC;
-  const int file_ptr_checkable = file_probe_a == file_probe_b;
-  const int func_ptr_checkable = func_probe_a == func_probe_b;
+  const char *const expected_file = OPENSSL_FILE;
+  const char *const expected_func = OPENSSL_FUNC;
 
   int ok = 1;
   struct proverr_functions_st *handle;
-  const char *expected_file;
-  const char *expected_func;
   int expected_line_first;
   int expected_line_second;
 
@@ -831,21 +863,17 @@ static int test_err_raise_macro(void)
    * matter more here: OPENSSL_FILE is whatever path the compiler was handed,
    * so a deep build tree really can outgrow the recorder's MOCK_CORE_TEXT_MAX
    * bytes.  Asserting the fit turns "the content assertion failed" into "the
-   * source path was truncated" without a debugging session.
+   * source path was truncated" without a debugging session.  They are checked
+   * on the same captures the content assertions use, so a fit proved here is
+   * a fit for the value actually asserted later.
    */
-  TEST_ASSERT(strlen(file_probe_a) < (size_t)MOCK_CORE_TEXT_MAX);
+  TEST_ASSERT(strlen(expected_file) < (size_t)MOCK_CORE_TEXT_MAX);
   ok &= test;
-  TEST_ASSERT(strlen(func_probe_a) < (size_t)MOCK_CORE_TEXT_MAX);
+  TEST_ASSERT(strlen(expected_func) < (size_t)MOCK_CORE_TEXT_MAX);
   ok &= test;
 
   mock_core_reset();
 
-  /* Position-independent: the file string names the translation unit and
-     OPENSSL_FUNC names this function, so neither has to share the raise's
-     line.  Both are captured before it so the raise's own line stays short
-     enough to read. */
-  expected_file = OPENSSL_FILE;
-  expected_func = OPENSSL_FUNC;
   /* DO NOT REFLOW THE NEXT LINE.  OPENSSL_LINE expands at the call site
      (include/prov/err.h:51), so the capture and the raise must stay on ONE
      physical line; split them and the expectation is off by one. */
@@ -913,16 +941,22 @@ static int test_err_raise_macro(void)
   TEST_ASSERT_STR_EQ("ERR_raise: captured function is the enclosing one",
                      mock_core_obs.func_text, expected_func);
   ok &= test;
-  if (file_ptr_checkable) {
-    TEST_ASSERT_PTR_EQ("ERR_raise: captured file pointer identity",
-                       mock_core_obs.file_ptr, expected_file);
-    ok &= test;
-  }
-  if (func_ptr_checkable) {
-    TEST_ASSERT_PTR_EQ("ERR_raise: captured function pointer identity",
-                       mock_core_obs.func_ptr, expected_func);
-    ok &= test;
-  }
+  /* The one pointer claim that is a contract rather than an accident of
+     literal storage: <openssl/macros.h> defines OPENSSL_FILE as either
+     __FILE__ or "" and OPENSSL_FUNC as either a function-name macro or
+     "(unknown function)", so both always expand to a string and never to a
+     null pointer.  Content cannot see a forwarded null on its own --
+     mock_core.h records one as "", which is precisely what OPENSSL_FILE
+     expands to under OPENSSL_NO_FILENAMES -- so the two checks together are
+     what content plus a null forwarding cannot both satisfy.  Identity is not
+     asserted here; hazard 3 at the head of this file says why, and names
+     where it is asserted instead. */
+  TEST_ASSERT_PTR_NOT_NULL("ERR_raise: captured file is not null",
+                           mock_core_obs.file_ptr);
+  ok &= test;
+  TEST_ASSERT_PTR_NOT_NULL("ERR_raise: captured function is not null",
+                           mock_core_obs.func_ptr);
+  ok &= test;
 
   mock_core_reset();
 
@@ -1011,18 +1045,13 @@ static int test_err_raise_data_macro(void)
      MOCK_CORE_VA_INT_THEN_STR documents (see test_va_list_traversal()). */
   char detail[] = "hi";
 
-  /* Same-object probes, for the reasons given in test_err_raise_macro(). */
-  const char *file_probe_a = OPENSSL_FILE;
-  const char *file_probe_b = OPENSSL_FILE;
-  const char *func_probe_a = OPENSSL_FUNC;
-  const char *func_probe_b = OPENSSL_FUNC;
-  const int file_ptr_checkable = file_probe_a == file_probe_b;
-  const int func_ptr_checkable = func_probe_a == func_probe_b;
+  /* The position-independent expectations, captured once, for the reasons
+     given in test_err_raise_macro(). */
+  const char *const expected_file = OPENSSL_FILE;
+  const char *const expected_func = OPENSSL_FUNC;
 
   int ok = 1;
   struct proverr_functions_st *handle;
-  const char *expected_file;
-  const char *expected_func;
   int expected_line;
 
   mock_core_reset();
@@ -1034,9 +1063,9 @@ static int test_err_raise_data_macro(void)
   if (handle == NULL)
     return 0;
 
-  TEST_ASSERT(strlen(file_probe_a) < (size_t)MOCK_CORE_TEXT_MAX);
+  TEST_ASSERT(strlen(expected_file) < (size_t)MOCK_CORE_TEXT_MAX);
   ok &= test;
-  TEST_ASSERT(strlen(func_probe_a) < (size_t)MOCK_CORE_TEXT_MAX);
+  TEST_ASSERT(strlen(expected_func) < (size_t)MOCK_CORE_TEXT_MAX);
   ok &= test;
   TEST_ASSERT(strlen(fmt) < (size_t)MOCK_CORE_TEXT_MAX);
   ok &= test;
@@ -1046,8 +1075,6 @@ static int test_err_raise_data_macro(void)
   mock_core_reset();
   mock_core_obs.va_mode = MOCK_CORE_VA_INT_THEN_STR;
 
-  expected_file = OPENSSL_FILE;
-  expected_func = OPENSSL_FUNC;
   /* DO NOT REFLOW THE NEXT LINE.  OPENSSL_LINE expands at the call site
      (include/prov/err.h:51), so the capture and the raise must stay on ONE
      physical line; split them and the expectation is off by one. */
@@ -1130,16 +1157,15 @@ static int test_err_raise_data_macro(void)
   TEST_ASSERT_STR_EQ("ERR_raise_data: captured function is the enclosing one",
                      mock_core_obs.func_text, expected_func);
   ok &= test;
-  if (file_ptr_checkable) {
-    TEST_ASSERT_PTR_EQ("ERR_raise_data: captured file pointer identity",
-                       mock_core_obs.file_ptr, expected_file);
-    ok &= test;
-  }
-  if (func_ptr_checkable) {
-    TEST_ASSERT_PTR_EQ("ERR_raise_data: captured function pointer identity",
-                       mock_core_obs.func_ptr, expected_func);
-    ok &= test;
-  }
+  /* Neither macro can expand to a null pointer -- see the same pair in
+     test_err_raise_macro() for why this is the one pointer property content
+     cannot cover on its own. */
+  TEST_ASSERT_PTR_NOT_NULL("ERR_raise_data: captured file is not null",
+                           mock_core_obs.file_ptr);
+  ok &= test;
+  TEST_ASSERT_PTR_NOT_NULL("ERR_raise_data: captured function is not null",
+                           mock_core_obs.func_ptr);
+  ok &= test;
 
   /*
    * --- the minimum legal __VA_ARGS__: the format string and nothing else ---

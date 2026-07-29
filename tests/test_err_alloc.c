@@ -24,10 +24,14 @@
  * leaves every callback-silence check, every duplicate-lifetime flow and every
  * other target in the suite passing while a live handle is never released --
  * which makes "the valid-handle half" of any free test a no-crash surrogate
- * rather than an assertion.  --wrap=free closes that hole by turning the freed
- * POINTER, the call COUNT and the balance between allocations and releases
- * into values this file can compare, so A-9 to A-12 below assert deallocation
- * positively.  err.c:82 is a real call site in the code under test, which is
+ * rather than an assertion.  --wrap=free closes that hole by turning the
+ * IDENTITY of the released block, the call COUNT and the balance between
+ * allocations and releases into values this file can compare, so A-9 to A-12
+ * below assert deallocation positively.  Identity is carried as a stable
+ * INTEGER ID minted by the interposer and resolved before it delegates, never
+ * as a pointer value read after the block has gone -- see the comment above
+ * alloc_ids[] for why the difference is a correctness matter and not a
+ * stylistic one.  err.c:82 is a real call site in the code under test, which is
  * what separates this from wrapping for its own sake: calloc and realloc stay
  * unwrapped precisely because err.c never calls them.
  *
@@ -37,11 +41,17 @@
  * operates at LINK time on undefined references: err.c.o inside libprov.a
  * refers to `malloc` and to `free`, so the linker rewrites those references --
  * err.c:56, err.c:71 and err.c:82 included -- to the __wrap_ functions below
- * without err.c being recompiled or even aware.  --wrap is a GNU-ld feature,
- * which is why the registration is feature-guarded: on a host whose linker
- * lacks it this target is NOT REGISTERED AT ALL, rather than registered and
- * skipped or registered and allowed to fail, so configuration still succeeds
- * and every other target runs normally.
+ * without err.c being recompiled or even aware.  --wrap belongs to the linker
+ * that is actually driven rather than to the compiler's brand, which is why the
+ * registration is guarded by a LINKER PROBE -- tests/CMakeLists.txt's
+ * Probe 4, which links a program of exactly this shape,
+ * with both options on the link line, through __wrap_malloc/__wrap_free to
+ * __real_malloc/__real_free.  Mere ACCEPTANCE of the options is deliberately
+ * not the gate: it is a proxy in its own right, and it was measured rejecting
+ * this target under --coverage while the target itself built and passed.  On a
+ * host whose active linker lacks the capability this target is NOT REGISTERED,
+ * rather than registered and skipped or registered and allowed to fail, so
+ * configuration still succeeds and every other target runs normally.
  *
  * THE LINK OPTIONS CANNOT GO MISSING UNNOTICED, which matters because every
  * assertion here would turn vacuous if they did -- an unwrapped malloc never
@@ -193,9 +203,38 @@ static unsigned long alloc_forced = 0;
 static unsigned long alloc_supplied = 0;
 
 /*
- * Deallocation observation state, and the whole reason free is wrapped.
- * err.c:82 is a bare free(handle) whose effect no caller can see, so these
- * three are the only place its occurrence becomes a value:
+ * ---------------------------------------------------------------------------
+ * IDENTITY IS CARRIED AS AN INTEGER, NEVER AS A POINTER ACROSS A FREE
+ * ---------------------------------------------------------------------------
+ * "The block released was the very handle I passed in" is the one claim that
+ * makes err.c:82 -- a bare free(handle) with no return value, no output
+ * parameter and no callback -- observable at all.  Stating it as a POINTER
+ * comparison is not available to this file, and the reason is a rule about
+ * lifetimes rather than about dereferencing: once free() has returned, the
+ * VALUE of every pointer that referred to the released space is indeterminate
+ * (C99 7.20.3p1, and 6.2.4p2 for the object whose lifetime has ended), so a
+ * later `released == handle_address` is not a question with a defined answer
+ * even though neither operand is dereferenced and even though both were copied
+ * out while the object was still alive.  Copying an address early does not
+ * extend the lifetime of the thing it designates.
+ *
+ * So the interposer mints a STABLE ID for every block it supplies, and every
+ * identity claim below is a comparison of unsigned long values that remain
+ * perfectly well defined for as long as the program runs:
+ *
+ *   alloc_ids[]       address -> id for the blocks this interposer supplied and
+ *                     has not yet seen released.  Small and fixed: this
+ *                     executable's cases hold at most three handles at once.
+ *   alloc_next_id     the id to mint next.  Starts at 1 so that 0 can mean "no
+ *                     block", which is what makes ALLOC_ID_NONE usable as an
+ *                     expected value rather than as a sentinel a case has to
+ *                     remember to avoid.
+ *   alloc_ids_overflowed
+ *                     set if the table ever ran out of room.  Asserted zero at
+ *                     the end of the run, so a silently dropped id can never
+ *                     turn an identity assertion into a vacuous one.
+ *
+ * Deallocation observation state proper:
  *
  *   free_calls        every entry into the interposer, NULL argument included,
  *                     because err.c:80-83 has no NULL guard and the call is
@@ -203,15 +242,96 @@ static unsigned long alloc_supplied = 0;
  *                     than assuming;
  *   free_calls_null   the subset whose argument was NULL, which is what lets
  *                     the balance below ignore them without losing them;
- *   last_freed        the most recent argument, so a case can assert that the
- *                     pointer released was the very handle it passed in and
- *                     not some other block.  Held as const void * because it
- *                     is only ever compared, never dereferenced -- the block
- *                     is gone by the time any assertion reads it.
+ *   last_freed_id     the id of the most recently released block, RESOLVED
+ *                     INSIDE __wrap_free BEFORE __real_free is called -- that
+ *                     is, while the block is still alive and the lookup is
+ *                     still a comparison of valid pointer values.  What
+ *                     survives the free is an integer, and integers are what
+ *                     the assertions read.
+ *   last_freed_known  whether that lookup found an entry at all, so "released a
+ *                     block this interposer never supplied" is distinguishable
+ *                     from "released block number N".
  */
+#define ALLOC_ID_SLOTS 8
+#define ALLOC_ID_NONE ((unsigned long)0)
+
+struct alloc_id_entry {
+  const void *block;
+  unsigned long id;
+};
+
+static struct alloc_id_entry alloc_ids[ALLOC_ID_SLOTS];
+static unsigned long alloc_next_id = 1;
+static unsigned long alloc_ids_overflowed = 0;
+
 static unsigned long free_calls = 0;
 static unsigned long free_calls_null = 0;
-static const void *last_freed = NULL;
+static unsigned long last_freed_id = ALLOC_ID_NONE;
+static int last_freed_known = 0;
+
+/*
+ * The id of a block the interposer supplied and has not seen released, or
+ * ALLOC_ID_NONE.  Call it while the block is still ALIVE: it compares pointer
+ * values, which is defined only for as long as the object exists.  Every case
+ * below captures the ids it will assert on before it releases anything.
+ */
+static unsigned long alloc_id_of(const void *block)
+{
+  size_t slot;
+
+  if (block == NULL)
+    return ALLOC_ID_NONE;
+
+  for (slot = 0; slot < (size_t)ALLOC_ID_SLOTS; slot++)
+    if (alloc_ids[slot].block == block)
+      return alloc_ids[slot].id;
+
+  return ALLOC_ID_NONE;
+}
+
+/* Record a freshly supplied block, or note that the table was too small. */
+static void alloc_id_add(const void *block)
+{
+  size_t slot;
+
+  for (slot = 0; slot < (size_t)ALLOC_ID_SLOTS; slot++) {
+    if (alloc_ids[slot].block == NULL) {
+      alloc_ids[slot].block = block;
+      alloc_ids[slot].id = alloc_next_id++;
+      return;
+    }
+  }
+
+  alloc_ids_overflowed++;
+}
+
+/*
+ * Retire the entry for a block that is about to be released, handing back its
+ * id.  Called from __wrap_free BEFORE __real_free, so the pointer comparison
+ * inside happens while the block is still alive; afterwards the table holds no
+ * reference to it, which keeps alloc_id_of() from ever comparing against a
+ * pointer whose object has gone.
+ */
+static unsigned long alloc_id_retire(const void *block)
+{
+  size_t slot;
+
+  if (block == NULL)
+    return ALLOC_ID_NONE;
+
+  for (slot = 0; slot < (size_t)ALLOC_ID_SLOTS; slot++) {
+    if (alloc_ids[slot].block == block) {
+      unsigned long id = alloc_ids[slot].id;
+
+      alloc_ids[slot].block = NULL;
+      alloc_ids[slot].id = ALLOC_ID_NONE;
+
+      return id;
+    }
+  }
+
+  return ALLOC_ID_NONE;
+}
 
 void *__wrap_malloc(size_t size)
 {
@@ -226,8 +346,10 @@ void *__wrap_malloc(size_t size)
   }
 
   block = __real_malloc(size);
-  if (block != NULL)
+  if (block != NULL) {
     alloc_supplied++;
+    alloc_id_add(block);
+  }
 
   return block;
 }
@@ -235,7 +357,15 @@ void *__wrap_malloc(size_t size)
 void __wrap_free(void *ptr)
 {
   free_calls++;
-  last_freed = ptr;
+
+  /*
+   * Resolve identity FIRST, while the block is still alive; see the comment
+   * above alloc_ids[].  `last_freed_known` is the lookup's own verdict, so a
+   * release of something this interposer never supplied is reported as such
+   * rather than as ALLOC_ID_NONE, which is also what a NULL argument yields.
+   */
+  last_freed_id = alloc_id_retire(ptr);
+  last_freed_known = ptr != NULL && last_freed_id != ALLOC_ID_NONE;
 
   if (ptr == NULL)
     free_calls_null++;
@@ -982,22 +1112,36 @@ static int test_countdown_precision(void)
  * difference between blocks supplied and blocks released are all values, and a
  * no-op body fails A-9 on its first assertion.
  *
- * Every pointer-identity assertion below compares values captured while the
- * block was still live -- the interposer records its argument on entry, before
- * it delegates, and each case copies out the address it is about to pass
- * before it calls -- and no assertion ever dereferences either operand.  That
- * is what keeps "the block released was this handle" a comparison of captured
- * values rather than a read through a pointer whose object has gone.
+ * NO IDENTITY CLAIM BELOW IS A POINTER COMPARISON.  Each is a comparison of
+ * stable integer ids: the interposer mints one per supplied block and resolves
+ * the released block's id on entry to __wrap_free, before it delegates, while
+ * each case captures the ids it will assert on while its handles are still
+ * alive.  Comparing pointer values after free() has returned would be
+ * undefined even without a dereference, because the VALUE of a pointer to
+ * released space is indeterminate (C99 7.20.3p1); the ids are ordinary
+ * unsigned longs and stay meaningful for the whole run.  See the comment above
+ * alloc_ids[] for the full reasoning.
+ *
+ * AND NO CLEANUP PATH DEPENDS ON A CLAIM HAVING HELD.  Where a case releases
+ * one object and then goes on using another, it decides whether the two really
+ * are distinct BEFORE it frees anything, and takes the "use after release"
+ * route only if they are.  Against a proverr_dup_handle() that handed back its
+ * own argument, the ungated form would free that object, raise through it and
+ * free it again -- a use-after-free and a double free (CWE-416, CWE-415) in the
+ * middle of a test whose job is to REPORT the aliasing, not to crash on it.
+ * A-5's guard already worked this way; A-11 and A-12 now do too.
  */
 static int test_free_handle_release(void)
 {
   struct proverr_functions_st *handle;
   struct proverr_functions_st *source;
   struct proverr_functions_st *copy;
-  const void *handle_address;
-  const void *source_address;
-  const void *copy_address;
-  const void *released;
+  unsigned long handle_id;
+  unsigned long source_id;
+  unsigned long copy_id;
+  unsigned long released_id;
+  int released_known;
+  int copy_is_distinct;
   unsigned long free_before;
   unsigned long free_null_before;
   unsigned long free_delta;
@@ -1031,12 +1175,18 @@ static int test_free_handle_release(void)
     return 0;
 
   /*
-   * A-9.  A live handle, released once.  The address is copied out here,
-   * before the call, because afterwards `handle` names an object that no
-   * longer exists; `released` is the copy the interposer took on entry.  Both
-   * operands of the identity assertion therefore predate the deallocation.
+   * A-9.  A live handle, released once.  Its id is read HERE, while the object
+   * is still alive, because that lookup is a pointer comparison; the assertion
+   * afterwards compares the id the interposer resolved on entry to __wrap_free
+   * against this one, and both are integers.  A non-zero id is asserted in its
+   * own right: it proves the interposer supplied this block and so that the
+   * comparison below has something to be about.
    */
-  handle_address = (const void *)handle;
+  handle_id = alloc_id_of((const void *)handle);
+
+  TEST_ASSERT_UINT_EQ("A-9 the handle is a block the interposer supplied",
+                      handle_id != ALLOC_ID_NONE, 1UL);
+  ok &= test;
 
   mock_core_reset();
   fflush(stdout);
@@ -1047,15 +1197,20 @@ static int test_free_handle_release(void)
   proverr_free_handle(handle);
 
   free_delta = free_calls - free_before;
-  released = last_freed;
+  released_id = last_freed_id;
+  released_known = last_freed_known;
   outstanding_after = alloc_outstanding();
 
   TEST_ASSERT_UINT_EQ("A-9 releasing a live handle reached free exactly once",
                       free_delta, 1UL);
   ok &= test;
 
-  TEST_ASSERT_PTR_EQ("A-9 the block released is the handle itself", released,
-                     handle_address);
+  TEST_ASSERT_INT_EQ("A-9 the released block was one the interposer supplied",
+                     released_known, 1);
+  ok &= test;
+
+  TEST_ASSERT_UINT_EQ("A-9 the block released is the handle itself",
+                      released_id, handle_id);
   ok &= test;
 
   TEST_ASSERT_INT_EQ("A-9 the handle's block is no longer outstanding",
@@ -1103,14 +1258,24 @@ static int test_free_handle_release(void)
                      outstanding_after, outstanding_before);
   ok &= test;
 
+  /*
+   * And the identity mechanism itself says so: a NULL argument resolves to no
+   * id at all, which is what makes "released block number N" in the cases
+   * either side of this one a claim about a real block rather than a default.
+   */
+  TEST_ASSERT_INT_EQ("A-10 free_handle(NULL) resolved no block id",
+                     last_freed_known, 0);
+  ok &= test;
+
   ok &= assert_no_callbacks("A-10");
 
   /*
    * A-11.  Releasing a duplicate must release the DUPLICATE.  err.c:82 frees
    * exactly the pointer it is handed, so the only observable difference
-   * between "freed the copy" and "freed the source" is that pointer value --
-   * which this file now holds.  Both halves are stated: the copy's block left
-   * the ledger, and the source is still a working handle afterwards.
+   * between "freed the copy" and "freed the source" is WHICH block left the
+   * ledger -- which this file now holds as two integers.  Both halves are
+   * stated: the copy's block left the ledger, and the source is still a
+   * working handle afterwards.
    */
   mock_core_reset();
   fflush(stdout);
@@ -1134,12 +1299,60 @@ static int test_free_handle_release(void)
     return 0;
   }
 
-  source_address = (const void *)source;
-  copy_address = (const void *)copy;
+  /*
+   * Both ids while both objects are alive, and the distinctness verdict with
+   * them.  Two blocks the interposer supplied separately carry different ids by
+   * construction, so `copy_id != source_id` is the same claim as "distinct
+   * block" and is the form that stays defined after either has been released.
+   * The pointer comparison is made here too, and only here, where both objects
+   * still exist.
+   */
+  source_id = alloc_id_of((const void *)source);
+  copy_id = alloc_id_of((const void *)copy);
+  copy_is_distinct = copy != source && copy_id != source_id
+                     && copy_id != ALLOC_ID_NONE
+                     && source_id != ALLOC_ID_NONE;
 
-  TEST_ASSERT_PTR_NE("A-11 the duplicate is a distinct block", copy_address,
-                     source_address);
+  TEST_ASSERT_UINT_EQ("A-11 the source is a block the interposer supplied",
+                      source_id != ALLOC_ID_NONE, 1UL);
   ok &= test;
+
+  TEST_ASSERT_UINT_EQ("A-11 the duplicate is a block the interposer supplied",
+                      copy_id != ALLOC_ID_NONE, 1UL);
+  ok &= test;
+
+  TEST_ASSERT_PTR_NE("A-11 the duplicate is a distinct block", copy, source);
+  ok &= test;
+
+  TEST_ASSERT_INT_EQ("A-11 the duplicate is a distinct block by id",
+                     copy_id != source_id, 1);
+  ok &= test;
+
+  /*
+   * *** THE GATE, AND IT IS LOAD-BEARING RATHER THAN DEFENSIVE. ***
+   *
+   * Everything from here to the end of this function releases one of the two
+   * objects and then keeps using the other: it frees the copy, raises through
+   * the source, and finally frees the source.  That sequence is defined only if
+   * the two really are separate objects.  A plausible proverr_dup_handle()
+   * mutant -- one that returns its own argument instead of allocating at
+   * err.c:71-77 -- makes them the same object, and the ungated form would then
+   * free it, raise through it (use-after-free, CWE-416) and free it a second
+   * time (double free, CWE-415).  The assertions above have ALREADY named that
+   * defect precisely; carrying on into undefined behaviour would replace a
+   * clean report with a signal, and a signal discards whatever stdout still
+   * holds -- losing the very lines that were the diagnosis.
+   *
+   * So on an alias this case releases EXACTLY ONE object -- the single object
+   * both pointers designate -- and returns failure.  A-5 gates A-6 and A-7 the
+   * same way; this is the same rule applied to the release cases.
+   */
+  if (!copy_is_distinct) {
+    proverr_free_handle(source);
+    fflush(stdout);
+
+    return 0;
+  }
 
   mock_core_reset();
   fflush(stdout);
@@ -1150,19 +1363,24 @@ static int test_free_handle_release(void)
   proverr_free_handle(copy);
 
   free_delta = free_calls - free_before;
-  released = last_freed;
+  released_id = last_freed_id;
+  released_known = last_freed_known;
   outstanding_after = alloc_outstanding();
 
   TEST_ASSERT_UINT_EQ("A-11 releasing the duplicate reached free exactly once",
                       free_delta, 1UL);
   ok &= test;
 
-  TEST_ASSERT_PTR_EQ("A-11 the block released is the duplicate", released,
-                     copy_address);
+  TEST_ASSERT_INT_EQ("A-11 the released block was one the interposer supplied",
+                     released_known, 1);
   ok &= test;
 
-  TEST_ASSERT_PTR_NE("A-11 the block released is not the source", released,
-                     source_address);
+  TEST_ASSERT_UINT_EQ("A-11 the block released is the duplicate", released_id,
+                      copy_id);
+  ok &= test;
+
+  TEST_ASSERT_INT_EQ("A-11 the block released is not the source",
+                     released_id != source_id, 1);
   ok &= test;
 
   TEST_ASSERT_INT_EQ("A-11 exactly one block left the ledger",
@@ -1175,9 +1393,8 @@ static int test_free_handle_release(void)
    * The source, raised through after its copy has been released.  A-7 already
    * shows a source surviving a FAILED duplication; what this adds is survival
    * of a SUCCESSFUL one whose product has since been freed, paired with the
-   * pointer-level proof above that the block released was the copy's.  The
-   * reason is unique to this case so a stale observation cannot pass for a
-   * fresh one.
+   * id-level proof above that the block released was the copy's.  The reason is
+   * unique to this case so a stale observation cannot pass for a fresh one.
    */
   mock_core_reset();
   fflush(stdout);
@@ -1203,15 +1420,20 @@ static int test_free_handle_release(void)
   proverr_free_handle(source);
 
   free_delta = free_calls - free_before;
-  released = last_freed;
+  released_id = last_freed_id;
+  released_known = last_freed_known;
   outstanding_after = alloc_outstanding();
 
   TEST_ASSERT_UINT_EQ("A-12 releasing the source reached free exactly once",
                       free_delta, 1UL);
   ok &= test;
 
-  TEST_ASSERT_PTR_EQ("A-12 the block released is the source", released,
-                     source_address);
+  TEST_ASSERT_INT_EQ("A-12 the released block was one the interposer supplied",
+                     released_known, 1);
+  ok &= test;
+
+  TEST_ASSERT_UINT_EQ("A-12 the block released is the source", released_id,
+                      source_id);
   ok &= test;
 
   TEST_ASSERT_INT_EQ("A-12 every block this case obtained has been released",
@@ -1304,6 +1526,27 @@ int main(void)
    */
   TEST_ASSERT_INT_EQ("every block the interposer supplied was released",
                      alloc_outstanding(), 0L);
+  cases &= test;
+
+  /*
+   * The id table never ran out of room.  Without this line an overflow would
+   * turn identity assertions into vacuous ones: a block whose id was never
+   * minted resolves to ALLOC_ID_NONE, and a comparison of two such blocks would
+   * pass while proving nothing.  ALLOC_ID_SLOTS is larger than the number of
+   * handles any case here holds at once, so this asserts a fact rather than
+   * guarding a plausible outcome -- which is exactly why a regression that
+   * added a case holding more must be told about it here.
+   */
+  TEST_ASSERT_UINT_EQ("the block-id table never overflowed",
+                      alloc_ids_overflowed, 0UL);
+  cases &= test;
+
+  /*
+   * And it minted at least one id, so the assertion above is not passing
+   * because the mechanism was never exercised.  Every id minted is a block the
+   * interposer supplied, and alloc_next_id starts at 1.
+   */
+  TEST_ASSERT(alloc_next_id > 1UL);
   cases &= test;
 
   /*

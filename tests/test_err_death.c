@@ -59,7 +59,8 @@
  * between a test that pins err.c's contract and one that would also pass on a
  * segfault.
  *
- * HOW THIS TARGET MUST BE BUILT -- err.c COMPILED INTO IT, UNDER if(UNIX)
+ * HOW THIS TARGET MUST BE BUILT -- err.c COMPILED INTO IT, UNDER A CAPABILITY
+ * PROBE
  *
  *   err.c must be compiled INTO this target rather than reached through the
  *     libprov library, because the NDEBUG state that matters is the one in
@@ -74,10 +75,17 @@
  *   A TIMEOUT on the registered test makes a harness defect degrade into a
  *     reported timeout instead of a hung suite.  It is a safety net, not a
  *     budget: the whole file completes in a few milliseconds.
- *   Registration must sit inside if(UNIX), so that on a host genuinely without
- *     POSIX process control this target is NOT REGISTERED AT ALL.  It is never
- *     registered-and-skipped and never allowed to fail; configuration still
- *     succeeds and every other target runs normally.
+ *   Registration must sit behind a probe of the interfaces this file actually
+ *     uses -- fork/waitpid with the wait-status macros, SIGABRT, and
+ *     setrlimit(RLIMIT_CORE) -- which tests/CMakeLists.txt performs as
+ *     LIBPROV_HAVE_POSIX_DEATH_HARNESS, at this file's own _POSIX_C_SOURCE
+ *     level.
+ *     A platform's name is not that proof: on a UNIX-like host that does not
+ *     declare setrlimit(), an if(UNIX) gate would have registered this target
+ *     and then failed the BUILD.  Where the probe fails the target is NOT
+ *     REGISTERED AT ALL.  It is never registered-and-skipped and never allowed
+ *     to fail; configuration still succeeds and every other target runs
+ *     normally.
  *
  * Nothing here links or calls libcrypto.  The core handle and the dispatch
  * tables come from tests/mock_core.h, whose OSSL_CORE_HANDLE is a test-local
@@ -122,7 +130,10 @@
  *
  * <sys/resource.h> is here for the setrlimit(RLIMIT_CORE) call in the forked
  * child inside death_run(): see the comment there for the artifact this
- * harness would otherwise leave behind on every run.
+ * harness would otherwise leave behind on every run.  It is one of the
+ * interfaces tests/CMakeLists.txt probes before registering this target, so a
+ * host that lacks it leaves the target unregistered instead of reaching this
+ * include and failing the build.
  */
 #ifndef _WIN32
 
@@ -588,8 +599,10 @@ int main(void)
 
 /*
  * The non-POSIX fallback.  DEAD CODE wherever the target is registered as this
- * file requires -- inside if(UNIX) -- because a host without POSIX process
- * control then never configures it, let alone builds or runs it.
+ * file requires -- behind tests/CMakeLists.txt's
+ * LIBPROV_HAVE_POSIX_DEATH_HARNESS
+ * probe -- because a host without POSIX process control fails that probe and
+ * then never configures the target, let alone builds or runs it.
  * Non-registration is the mechanism on purpose: skipping a registered test is
  * precisely what this suite is forbidden to do, and a target that does not
  * exist cannot be mistaken for one that was weakened.
@@ -606,10 +619,11 @@ int main(void)
   printf("test_err_death: fork()/waitpid() are unavailable on this host, so"
          " err.c's assert() contract (err.c:26, :27, :47, :48, :49) CANNOT be"
          " verified here.\n");
-  printf("test_err_death: this target is meant to be registered only under"
-         " CMake's if(UNIX) guard.  Reaching this code means it was registered"
-         " anyway, so it FAILS deliberately rather than passing without"
-         " asserting anything.\n");
+  printf("test_err_death: this target is meant to be registered only when"
+         " CMake's LIBPROV_HAVE_POSIX_DEATH_HARNESS probe succeeds.  Reaching"
+         " this"
+         " code means it was registered anyway, so it FAILS deliberately rather"
+         " than passing without asserting anything.\n");
   return TEST_REPORT("test_err_death (unsupported host)");
 }
 

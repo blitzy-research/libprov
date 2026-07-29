@@ -77,8 +77,10 @@
  * mandated flagless command; param_util.h's protected-boundary oracle explains
  * the mechanism and why it cannot manufacture a failure.  It is compiled in
  * only where LIBPROV_TEST_GUARD_PAGES is defined -- tests/CMakeLists.txt
- * defines it for this target on POSIX hosts -- so on a host without mmap() and
- * fork() the rest of the file is unaffected.
+ * defines it for this target only where its guard-page capability probe proved
+ * the whole mapping, process and resource-limit set the oracle needs -- so on a
+ * host missing any of them this target is still registered and every other case
+ * in the file is unaffected.
  *
  * Exactly one behaviour is deliberately NOT asserted, marked "CLASS C" in
  * test_get_edge_cases().  It is not a gap and must not be "completed" by
@@ -411,7 +413,8 @@ static int test_get_int_happy(void)
      * are above.  The second assertion also states this file's one
      * representational premise: that the bit pattern one past the largest
      * positive value denotes INT_MIN, which is two's complement.  num.c
-     * presupposes it too -- num.c:85-86 calls sign_t "the 2's complement
+     * presupposes it too -- num.c:85-86 says the padding byte its rules
+     * compare, num.c:7's sign_t, "just so happens to have the 2's complement
      * padding value" -- so a host where this failed would be a host where the
      * library's own padding rules do not hold, and the failure names the
      * premise rather than hiding it.
@@ -971,6 +974,16 @@ static int test_get_boundaries(void)
  *       positive -- the two's complement padding values;
  *   (b) the high bit of the NEXT byte down must match the high bit of that
  *       same pad byte.
+ *
+ * A NAMING NOTE, because that citation does not read cleanly on its own.
+ * num.c:85-88 states both rules in terms of a "srcsigned", and no identifier
+ * of that name exists anywhere in the file.  What the loop actually compares
+ * is src.sign, the struct numdesc member declared at num.c:39: rule (a) is
+ * the test at num.c:93 and rule (b) the test at num.c:94-95.  The stale name
+ * is recorded here rather than corrected there because num.c's diff is
+ * deliberately confined to the three sanctioned memory-safety repairs -- the
+ * same reason include/prov/num.h's silence on the success value is recorded
+ * in this file's header instead of being fixed in the header itself.
  *
  * Neither rule is written to care whether the source's declared type is
  * signed, and the pair of fixtures below proves that it does not: two
@@ -2599,8 +2612,10 @@ static int test_get_error_invariants(void)
  *
  *   - dropping "|| param->data_size == 0" from paramsign()'s guard
  *     (num.c:19-20) makes it compute data_size - 1, wrap, and read the byte
- *     before the source.  MEASURED: with that defect reintroduced, the whole
- *     suite -- all eight targets -- stayed green.
+ *     before the source.  MEASURED: with that defect reintroduced, every
+ *     target of the suite as it then stood -- the eight that predate this
+ *     group -- stayed green; with this group in place it is caught here by
+ *     name, as a SIGSEGV against the protected page.
  *   - relaxing the padding-strip loop's bound at num.c:92 from > to >= lets
  *     one extra iteration evaluate rule (b) at srcmsb + srcmsb2lsb, one step
  *     beyond the most significant end of the source.
@@ -2696,6 +2711,17 @@ static int guard_verdict_completed(const char *casename,
  * none of the five documented return codes, so the parent's exact-code assertion
  * fails naming the cause instead of the case quietly degrading into a different,
  * passing one.
+ *
+ * THAT CHECK COMES FIRST, AND IT INCLUDES THE RECORD'S CAPACITY.  Every body
+ * that hands bytes back copies a NATIVE width -- 1, sizeof(int) or
+ * sizeof(size_t) here -- into a record whose `bytes` array is sized by an
+ * expression in param_util.h, so "it fits" is a property of that expression
+ * rather than a guarantee of the language.  param_guard_record_fits() is
+ * therefore consulted BEFORE the fixture is written and before any copy, not
+ * after: a body that found out afterwards would have found out by overrunning a
+ * shared mapping.  On every ABI this suite compiles for the answer is yes; the
+ * point of asking is that a fixture which ever outgrew the record would be
+ * refused instead of writing past it.
  */
 
 /*
@@ -2772,7 +2798,7 @@ static void guard_strip_floor(struct param_guard_record *record,
     OSSL_PARAM param;
     OSSL_PARAM snapshot;
 
-    if (src == NULL) {
+    if (src == NULL || !param_guard_record_fits((size_t)1)) {
         record->rc = PARAM_GUARD_RC_UNBUILT;
         return;
     }
@@ -2818,7 +2844,13 @@ static void guard_body_source_high_edge(struct param_guard_record *record,
     OSSL_PARAM snapshot;
     size_t dest = param_sentinel_size_t();
 
+    /*
+     * The capacity question precedes the fixture deliberately: || short
+     * circuits, so a record too small to carry `width` bytes refuses the case
+     * without the source ever being written, let alone copied back.
+     */
     if (src == NULL
+        || !param_guard_record_fits(width)
         || !param_put_host_order(src, width, param_max_signed_in(width))) {
         record->rc = PARAM_GUARD_RC_UNBUILT;
         return;
@@ -2856,7 +2888,9 @@ static void guard_dest_int(struct param_guard_record *record,
     OSSL_PARAM snapshot;
     int value = 0;
 
-    if (dest == NULL || !param_fill_sentinel(dest, sizeof(int))) {
+    if (dest == NULL
+        || !param_guard_record_fits(sizeof(int))
+        || !param_fill_sentinel(dest, sizeof(int))) {
         record->rc = PARAM_GUARD_RC_UNBUILT;
         return;
     }
@@ -2894,6 +2928,32 @@ static int test_get_guarded_boundaries(void)
     struct param_guard_record *record;
     struct param_guard_verdict verdict;
     int ret = 1, test;
+
+    /*
+     * CAPACITY FIRST, AND BLOCKING.  The bodies below consult
+     * param_guard_record_fits() before they copy, which keeps the CHILD inside
+     * the shared record; these two assertions keep the PARENT inside it as well,
+     * because the byte comparisons further down read sizeof(size_t) and
+     * sizeof(int) bytes out of `record->bytes` to compare them.  Both are native
+     * widths, so "they fit" is a property of the expression param_util.h derives
+     * PARAM_GUARD_BYTES from rather than a guarantee of the language.
+     *
+     * It returns rather than continuing, for the same reason the bodies refuse
+     * rather than truncate: a group that carried on would perform the very
+     * out-of-bounds read it just reported.  It returns BEFORE the mapping and
+     * the record are opened, so nothing is owed to cleanup, and the assertions
+     * make the run fail loudly instead of quietly losing the group.  On every
+     * ABI this suite compiles for both hold.
+     */
+    TEST_ASSERT_INT_EQ("guard setup: size_t fixture fits the record",
+                       param_guard_record_fits(sizeof(size_t)), 1);
+    ret &= test;
+    TEST_ASSERT_INT_EQ("guard setup: int fixture fits the record",
+                       param_guard_record_fits(sizeof(int)), 1);
+    ret &= test;
+    if (!param_guard_record_fits(sizeof(size_t))
+        || !param_guard_record_fits(sizeof(int)))
+        return 0;
 
     /*
      * The mapping and the shared record are asserted, not probed: a registered

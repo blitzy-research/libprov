@@ -683,16 +683,30 @@ static PARAMUTIL_MAYBE_UNUSED int param_identical(const OSSL_PARAM *param,
  * host: glibc declares mmap(), mprotect(), munmap(), fork(), waitpid(),
  * setrlimit() and sysconf() and defines MAP_ANONYMOUS under a bare -std=c99
  * with no macro at all, so the requirement buys portability rather than fixing
- * anything here.  The check below turns a C library that does gate them into
- * one diagnosable compile error naming the cause, rather than an obscure
- * cascade.
+ * anything here.
+ *
+ * WHICH HOSTS COMPILE THIS AT ALL IS DECIDED AT CONFIGURE TIME, not by a
+ * platform's name.  tests/CMakeLists.txt defines LIBPROV_TEST_GUARD_PAGES only
+ * where its guard-page capability probe compiled and linked a program
+ * naming every interface this block uses -- the mmap family with
+ * MAP_ANONYMOUS, MAP_PRIVATE, MAP_SHARED and the PROT_* flags,
+ * sysconf(_SC_PAGESIZE), fork/waitpid with the wait-status macros, and
+ * setrlimit(RLIMIT_CORE) -- at the same feature-test level and with the same
+ * -std= flag the numeric targets are compiled with, and repeating the MAP_ANON
+ * fallback and the #error below so that it fails wherever this would.  A host
+ * that lacks any one of them therefore gets the two numeric targets one group
+ * lighter instead of a failed build.  The check below stays as the backstop
+ * that names the cause in one diagnosable compile error, rather than an obscure
+ * cascade, if this header is ever compiled without that gate.
  *
  * <sys/resource.h> is here for the setrlimit(RLIMIT_CORE) call in the forked
  * child inside param_guard_run(): see the comment there for the artifact this
  * harness would otherwise leave behind on every run.  Like the rest of this
  * block it sits INSIDE the LIBPROV_TEST_GUARD_PAGES guard, so a translation
  * unit that does not ask for the oracle is not made to depend on a POSIX
- * header it never needs.
+ * header it never needs -- and the configure-time probe named above includes it
+ * too, so this header is never the first thing to discover that a host does not
+ * have it.
  */
 
 # include <errno.h>
@@ -712,11 +726,33 @@ static PARAMUTIL_MAYBE_UNUSED int param_identical(const OSSL_PARAM *param,
 # endif
 
 /*
- * How many destination bytes a guarded case may hand back for byte-level
- * comparison.  Larger than any destination in the suite, and fixed so the
- * shared record has a size the mapping can be made from.
+ * How many bytes a guarded case may hand back for byte-level comparison.
+ *
+ * DERIVED, not transcribed.  Every fixture a guarded body copies in here is a
+ * NATIVE width, and C guarantees no ceiling on those: the five writer sites in
+ * the suite hand back 1 byte (the padding-strip floor, and the one-byte refusal
+ * on the set side), sizeof(int) (the native destination), sizeof(size_t) (the
+ * full-width source) and 3 * sizeof(int) (the over-wide destination, which is
+ * tests/test_num_set.c's SET_GUARD_WIDE_BYTES).  A literal capacity is only
+ * large enough for the ABIs someone thought of, and the record is written by a
+ * child into a SHARED mapping, so an overrun there is a real out-of-bounds
+ * write rather than a comparison that comes out wrong.
+ *
+ * This expression is >= each of those widths on every ABI, because sizeof(int)
+ * and sizeof(size_t) are both at least 1: it exceeds 3 * sizeof(int) by
+ * sizeof(size_t), exceeds sizeof(size_t) by 3 * sizeof(int), and is therefore
+ * comfortably above sizeof(int) and 1.  It is an integer constant expression
+ * (C99 6.6p6 admits sizeof), so it remains a valid array bound in the struct
+ * below.  The shape deliberately mirrors tests/test_num_set.c's
+ * SET_CASE_MAX_BYTES, which solves the same problem for that file's own
+ * buffers.
+ *
+ * Capacity is nonetheless NOT the only line of defence, because a future
+ * fixture could be wider than any expression written today:
+ * param_guard_record_fits() below is the blocking precondition every guarded
+ * body consults before it builds anything.
  */
-# define PARAM_GUARD_BYTES 64
+# define PARAM_GUARD_BYTES (sizeof(size_t) + 3 * sizeof(int))
 
 /*
  * A writable region with a PROT_NONE page on either side.  `low` is its first
@@ -745,6 +781,30 @@ struct param_guard_record {
     size_t nbytes;
     unsigned char bytes[PARAM_GUARD_BYTES];
 };
+
+/*
+ * Whether `width` bytes can be handed back through the record, asked BEFORE a
+ * guarded body builds its fixture -- in the same spirit as this suite's other
+ * expressibility gates, and for a sharper reason than most of them.
+ *
+ * It is BLOCKING, never advisory.  A body that discovered the problem after the
+ * copy would have discovered it by performing an out-of-bounds write into a
+ * shared mapping, and an assertion that merely records the mismatch and lets
+ * the copy proceed cannot prevent that.  So every writer consults this first
+ * and reports PARAM_GUARD_RC_UNBUILT instead of building anything, which the
+ * parent's exact-return-code assertion then fails with a value that names the
+ * cause -- a refused fixture, not a different passing case.
+ *
+ * On any ABI this suite can be compiled for the answer is yes, PARAM_GUARD_BYTES
+ * being derived from those very widths.  It is asked anyway, because "the
+ * capacity is wide enough" is a property of an expression someone has to keep
+ * true, and this is what makes a future fixture that outgrows it fail loudly
+ * rather than silently overrun.
+ */
+static PARAMUTIL_MAYBE_UNUSED int param_guard_record_fits(size_t width)
+{
+    return width <= PARAM_GUARD_BYTES;
+}
 
 /*
  * How a guarded child ended.  `completed` is the one predicate the parent
