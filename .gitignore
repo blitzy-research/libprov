@@ -61,31 +61,3 @@ Testing/
 *.gcno
 *.gcda
 *.gcov
-
-# The auxiliary build trees README.md documents.  The coverage and sanitizer
-# recipes each configure a tree of their OWN -- cmake -B build-cov and
-# cmake -B build-san -- precisely so the mandated flagless command stays
-# uninstrumented, which means running either recipe as written leaves a
-# directory beside build/ that the pattern above does not cover.  The two names
-# the README uses are listed explicitly, and build-*/ covers any other tree made
-# with that same -B build-<purpose> idiom.  Nothing tracked begins with "build":
-# the only tracked path containing the word is tests/mock_core.h, which is
-# matched by none of these.
-build-cov/
-build-san/
-build-*/
-
-# CTest's JUnit report.  ctest --output-junit resolves its argument relative to
-# the build directory, so the README's own invocation lands inside build/ and is
-# already covered -- but the same option run from the source tree, or given a
-# path outside the build tree, is not.  The README names this exact filename, so
-# it is named here too.
-results.xml
-
-# DELIBERATELY NOT IGNORED: core images.  Both fork sites in the suite --
-# param_util.h's guarded-boundary harness and tests/test_err_death.c's abort
-# harness -- drop RLIMIT_CORE to zero in the child before anything can fault, so
-# an EXPECTED death writes no image and there is nothing to hide.  An
-# unexpected one is a defect worth noticing in git status, and ignoring it would
-# hide the regression rather than prevent it.  A pattern would also have to be
-# written carefully: a glob such as *core* would match tests/mock_core.h.

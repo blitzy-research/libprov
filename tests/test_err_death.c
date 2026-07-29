@@ -59,8 +59,8 @@
  * between a test that pins err.c's contract and one that would also pass on a
  * segfault.
  *
- * HOW THIS TARGET MUST BE BUILT -- err.c COMPILED INTO IT, UNDER A CAPABILITY
- * PROBE
+ * HOW THIS TARGET MUST BE BUILT -- err.c COMPILED INTO IT, WITH ASSERTIONS
+ * PINNED LIVE, AND REGISTERED ONLY ON A POSIX HOST
  *
  *   err.c must be compiled INTO this target rather than reached through the
  *     libprov library, because the NDEBUG state that matters is the one in
@@ -75,17 +75,21 @@
  *   A TIMEOUT on the registered test makes a harness defect degrade into a
  *     reported timeout instead of a hung suite.  It is a safety net, not a
  *     budget: the whole file completes in a few milliseconds.
- *   Registration must sit behind a probe of the interfaces this file actually
- *     uses -- fork/waitpid with the wait-status macros, SIGABRT, and
- *     setrlimit(RLIMIT_CORE) -- which tests/CMakeLists.txt performs as
- *     LIBPROV_HAVE_POSIX_DEATH_HARNESS, at this file's own _POSIX_C_SOURCE
- *     level.
- *     A platform's name is not that proof: on a UNIX-like host that does not
- *     declare setrlimit(), an if(UNIX) gate would have registered this target
- *     and then failed the BUILD.  Where the probe fails the target is NOT
+ *   Registration sits behind CMake's if(UNIX), which is what the AAP
+ *     prescribes for this target, and where it does not hold the target is NOT
  *     REGISTERED AT ALL.  It is never registered-and-skipped and never allowed
  *     to fail; configuration still succeeds and every other target runs
  *     normally.
+ *     A platform name is a weaker claim than a probe of each interface, so this
+ *     file is written to need no more than the name guarantees.  fork(),
+ *     waitpid(), the wait-status macros and SIGABRT are the harness itself and
+ *     are required outright -- a host without them cannot host this contract at
+ *     all, and the fallback at the foot of this file says so instead of
+ *     pretending.  The ONE facility that is merely desirable,
+ *     setrlimit(RLIMIT_CORE), is therefore made optional at compile time (see
+ *     the include block below) rather than assumed: on a UNIX-like host that
+ *     does not offer it, this target still builds and still asserts the whole
+ *     abort contract.  That is what lets a plain if(UNIX) gate be safe.
  *
  * Nothing here links or calls libcrypto.  The core handle and the dispatch
  * tables come from tests/mock_core.h, whose OSSL_CORE_HANDLE is a test-local
@@ -122,25 +126,59 @@
 
 /*
  * The POSIX headers are included INSIDE the guard on purpose.  <sys/wait.h>,
- * <unistd.h>, <sys/types.h> and <sys/resource.h> do not exist on a non-POSIX
- * host, so including them unconditionally would make the fallback at the foot
- * of this file unreachable: the compile would fail on a missing header long
- * before the preprocessor reached the alternative.  <signal.h> and <errno.h>
- * are ISO C and stay above.
+ * <unistd.h> and <sys/types.h> do not exist on a non-POSIX host, so including
+ * them unconditionally would make the fallback at the foot of this file
+ * unreachable: the compile would fail on a missing header long before the
+ * preprocessor reached the alternative.  <signal.h> and <errno.h> are ISO C and
+ * stay above.
  *
- * <sys/resource.h> is here for the setrlimit(RLIMIT_CORE) call in the forked
- * child inside death_run(): see the comment there for the artifact this
- * harness would otherwise leave behind on every run.  It is one of the
- * interfaces tests/CMakeLists.txt probes before registering this target, so a
- * host that lacks it leaves the target unregistered instead of reaching this
- * include and failing the build.
+ * These three, plus SIGABRT, ARE the harness.  Nothing here can work without
+ * them, so they are required outright.
  */
 #ifndef _WIN32
 
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <sys/resource.h>
+
+/*
+ * <sys/resource.h> IS OPTIONAL, AND MAKING IT OPTIONAL IS WHAT LETS if(UNIX)
+ * BE THE REGISTRATION GATE.
+ *
+ * It is wanted only for the setrlimit(RLIMIT_CORE) call in the forked child
+ * inside death_run(): see the comment there for the artifact this harness would
+ * otherwise leave behind on every run.  That is HYGIENE, not contract -- the
+ * aborts are observed through WIFSIGNALED()/WTERMSIG() either way -- so a host
+ * that does not offer the header must lose the hygiene, never the test.
+ * Including it unconditionally would have made a UNIX-like host without it fail
+ * the BUILD, which is exactly the failure mode a bare platform-name gate cannot
+ * rule out on its own.
+ *
+ * __has_include is the detection used, tested for with defined() first because
+ * a compiler that does not provide it must not see the operator at all; the two
+ * conditions are therefore nested rather than combined on one line, since the
+ * whole of a single #if line is macro-expanded before evaluation.  GCC and
+ * Clang have supported it for many releases and both accept it under
+ * -std=c99 -Wpedantic, which is how this suite is compiled.
+ *
+ * Where __has_include is absent the header is NOT included on a guess.  That is
+ * the deliberately conservative branch: guessing would restore precisely the
+ * build failure this block exists to prevent, and the cost of being wrong is
+ * only that core images reappear where /proc/sys/kernel/core_pattern puts them.
+ * DEATH_HAVE_RLIMIT_CORE is defined to 0 or 1 either way, so the call site
+ * below is a single #if with no host names in it.
+ */
+#if defined(__has_include)
+# if __has_include(<sys/resource.h>)
+#  include <sys/resource.h>
+# endif
+#endif
+
+#if defined(RLIMIT_CORE)
+# define DEATH_HAVE_RLIMIT_CORE 1
+#else
+# define DEATH_HAVE_RLIMIT_CORE 0
+#endif
 
 /*
  * Exit statuses a child uses to report that something went wrong INSIDE it.
@@ -263,12 +301,22 @@ static struct death_result death_run(void (*body)(void))
      * decrease under POSIX) would merely go back to writing the dumps it wrote
      * before; that is a hygiene regression, not a wrong verdict, and failing
      * the abort contract over it would be a false negative.
+     *
+     * Compiled out entirely where RLIMIT_CORE is unavailable, for the same
+     * reason it is not tested when it is: see the include block above.  The
+     * abort contract every case in this file asserts is untouched by its
+     * absence, because WIFSIGNALED()/WTERMSIG() report the signal whether or
+     * not the kernel also wrote an image.
      */
-    struct rlimit death_no_core;
+#if DEATH_HAVE_RLIMIT_CORE
+    {
+      struct rlimit death_no_core;
 
-    death_no_core.rlim_cur = 0;
-    death_no_core.rlim_max = 0;
-    (void)setrlimit(RLIMIT_CORE, &death_no_core);
+      death_no_core.rlim_cur = 0;
+      death_no_core.rlim_max = 0;
+      (void)setrlimit(RLIMIT_CORE, &death_no_core);
+    }
+#endif
 
     /*
      * Its stderr goes to /dev/null so that the assertion messages this file
@@ -599,13 +647,12 @@ int main(void)
 
 /*
  * The non-POSIX fallback.  DEAD CODE wherever the target is registered as this
- * file requires -- behind tests/CMakeLists.txt's
- * LIBPROV_HAVE_POSIX_DEATH_HARNESS
- * probe -- because a host without POSIX process control fails that probe and
- * then never configures the target, let alone builds or runs it.
- * Non-registration is the mechanism on purpose: skipping a registered test is
- * precisely what this suite is forbidden to do, and a target that does not
- * exist cannot be mistaken for one that was weakened.
+ * file requires -- behind tests/CMakeLists.txt's if(UNIX) -- because a host
+ * without POSIX process control does not satisfy that gate and then never
+ * configures the target, let alone builds or runs it.  Non-registration is the
+ * mechanism on purpose: skipping a registered test is precisely what this suite
+ * is forbidden to do, and a target that does not exist cannot be mistaken for
+ * one that was weakened.
  *
  * If it is ever reached anyway it must not pretend to pass.  It asserts
  * nothing, and testutil.h's exit-status contract fails a run in which no
@@ -619,11 +666,10 @@ int main(void)
   printf("test_err_death: fork()/waitpid() are unavailable on this host, so"
          " err.c's assert() contract (err.c:26, :27, :47, :48, :49) CANNOT be"
          " verified here.\n");
-  printf("test_err_death: this target is meant to be registered only when"
-         " CMake's LIBPROV_HAVE_POSIX_DEATH_HARNESS probe succeeds.  Reaching"
-         " this"
-         " code means it was registered anyway, so it FAILS deliberately rather"
-         " than passing without asserting anything.\n");
+  printf("test_err_death: this target is meant to be registered only inside"
+         " CMake's if(UNIX).  Reaching this code means it was registered"
+         " anyway, so it FAILS deliberately rather than passing without"
+         " asserting anything.\n");
   return TEST_REPORT("test_err_death (unsupported host)");
 }
 

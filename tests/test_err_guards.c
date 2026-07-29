@@ -158,12 +158,16 @@
  * The CTest target this compilation becomes, used as the label of the summary
  * line TEST_REPORT() prints.  It has to track the variant for the same reason
  * GUARD_VARIANT_NAME does: both binaries are built from this one source, so a
- * hard-coded label made the _ndebug target sign its own summary
- * "test_err_guards: 66 assertions" and a reader of a combined log could not
- * tell which of the two produced which counts, nor that 66 and 133 are two
- * different contracts rather than one flaky one.  Kept identical to the target
- * names registered in tests/CMakeLists.txt:316-321 so `ctest -R <label>`
- * selects exactly the binary that printed the line.
+ * hard-coded label made the _ndebug target sign its own summary under the
+ * other target's name, and a reader of a combined log could not tell which of
+ * the two produced which counts, nor that two different totals are two
+ * different contracts rather than one flaky test.  The two spellings below are
+ * kept identical to the CTest target names `test_err_guards` and
+ * `test_err_guards_ndebug` -- registered from this one source in
+ * tests/CMakeLists.txt, under the heading "The two build variants of err.c's
+ * guard contract" -- so `ctest -R <label>` selects exactly the binary that
+ * printed the line.  Target names and that heading are cited rather than line
+ * numbers, which move whenever that file is edited.
  *
  * Informational only, exactly like GUARD_VARIANT_NAME: TEST_REPORT() derives
  * the verdict from testutil.h's assertion and mismatch counters, never from

@@ -114,8 +114,7 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
         && (dest.data_type == OSSL_PARAM_INTEGER || src.sign == POSITIVE)) {
 
         if (src.size < dest.size) {
-            /* dest.size - src.size overran a 12-byte set_int(&p, 5) dest */
-            /* and made a 1-byte 0xFF get_int() yield -16776961, not -1.  */
+            /* 12-byte set_int(&p,5) overran; 1-byte 0xFF get_int: -16776961 */
             size_t padstart = dest.endian == BIG ? 0 : src.size;
 
             memset((unsigned char *)dest.data + padstart, src.sign,

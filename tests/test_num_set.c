@@ -6,14 +6,14 @@
  * reachable outcome, the exact bytes left in the destination, and the side
  * effect on OSSL_PARAM.return_size that no header documents.
  *
- * WHAT THE SETTERS ARE.  num.c:154-168 is the provnum_set_##T half of the
+ * WHAT THE SETTERS ARE.  num.c:153-167 is the provnum_set_##T half of the
  * implement_provnum(T, DT) macro, instantiated twice: for size_t with
- * OSSL_PARAM_UNSIGNED_INTEGER at num.c:170, and for int with
- * OSSL_PARAM_INTEGER at num.c:171.  Each builds a destination descriptor from
- * the caller's OSSL_PARAM (num.c:157-160), builds a source descriptor whose
+ * OSSL_PARAM_UNSIGNED_INTEGER at num.c:169, and for int with
+ * OSSL_PARAM_INTEGER at num.c:170.  Each builds a destination descriptor from
+ * the caller's OSSL_PARAM (num.c:156-159), builds a source descriptor whose
  * data_type is the macro's DT and whose sign is HARDCODED POSITIVE
- * (num.c:161-163), hands both to provnum_copy() (num.c:54-137), assigns the
- * result's size to param->return_size (num.c:166) and returns the result's
+ * (num.c:160-162), hands both to provnum_copy() (num.c:54-136), assigns the
+ * result's size to param->return_size (num.c:165) and returns the result's
  * code.  Every claim in this file follows from those lines.
  *
  * SUCCESS IS EXACTLY 1, and include/prov/num.h never says so: only num.c:56's
@@ -21,7 +21,7 @@
  * below is asserted as == 1 literally -- never >= 0, != 0 or > 0, any of which
  * would accept a value the contract forbids.
  *
- * return_size IS WRITTEN ON EVERY PATH, INCLUDING EVERY FAILURE.  num.c:166
+ * return_size IS WRITTEN ON EVERY PATH, INCLUDING EVERY FAILURE.  num.c:165
  * assigns it unconditionally after provnum_copy() has returned, and
  * result.size was initialised to dest.size at num.c:56 and is overwritten by
  * no error path, so param->return_size == param->data_size holds whether the
@@ -103,32 +103,26 @@
  * instantiations, and the two guards differ in strength because the two defects
  * differ in where they touch memory.
  *
- * The padding-offset repair at num.c:119 is an out-of-bounds WRITE into the
- * DESTINATION, which the test owns, so it is caught deterministically twice
- * over.  Every destination buffer in this file is WIDER than the capacity its
- * OSSL_PARAM declares and the bytes past that capacity are asserted to still
- * hold the sentinel, so a regression writes into that margin and fails in an
- * ORDINARY build -- the over-wide destination cases in test_set_int_happy() and
- * test_set_size_t_bytes() are those guards.  test_set_guarded_boundaries() then
- * puts a destination flush against a PROT_NONE page, so the same write becomes a
- * fault rather than a mismatch, and asserts the same contract with the
- * destination's other end protected as well.
+ * The padding-offset repair at num.c:118 is an out-of-bounds WRITE into the
+ * DESTINATION, which the test owns, so it is caught deterministically in an
+ * ORDINARY build.  Every destination buffer in this file is WIDER than the
+ * capacity its OSSL_PARAM declares and the bytes past that capacity are asserted
+ * to still hold the sentinel, so a regression writes into that margin and fails
+ * an assertion by name -- the over-wide destination cases in test_set_int_happy()
+ * and test_set_size_t_bytes() are those guards.
  *
  * The zero-capacity clamp at num.c:91 is different in kind, not merely in
  * degree: its regression is an out-of-bounds READ inside provnum_set_*'s OWN
- * stack frame -- num.c:162 builds the source descriptor over `&src` -- which no
+ * stack frame -- num.c:161 builds the source descriptor over `&src` -- which no
  * fixture in this file can protect, because a protected page can only be placed
- * at an object the test owns.  Three mechanisms therefore share the work.  The
- * zero-capacity cases in test_set_errors() pin the full documented answer (-2,
- * return_size 0, buffer untouched) in every build; test_set_guarded_boundaries()
- * proves the neighbouring property that a zero-capacity call touches no
- * destination byte at all; and test_set_memory_oracle() -- the group at the end
- * of this file, which tests/CMakeLists.txt builds into a SECOND target from this
- * same source, compiled together with num.c under -fsanitize=address -- turns the
- * read itself into a named assertion failure on any host.  All three run under
- * the mandated flagless command.  The comment headed "THE ZERO-CAPACITY CLAMP:
- * WHAT OBSERVES A REGRESSION, AND WHAT CANNOT" sets out the reasoning, the
- * measurement, and the alternatives that were tried and rejected.
+ * at an object the test owns.  The zero-capacity cases in test_set_errors() and
+ * test_set_return_size_invariant() therefore pin the full documented answer
+ * (-2, return_size 0, buffer untouched) in every build, which is the whole of
+ * what a caller depends on, while the READ itself is caught by the opt-in
+ * -fsanitize=address,undefined configuration README.md documents, run alongside
+ * the mutation spot-check that reverts the clamp.  The comment headed "THE
+ * ZERO-CAPACITY CLAMP: WHAT OBSERVES A REGRESSION, AND WHAT CANNOT" sets out the
+ * reasoning, the measurement, and the alternatives that were tried and rejected.
  *
  * ACCUMULATOR IDIOM.  Each function keeps its own "int ret = 1;" and folds in
  * each verdict with "ret &= test;", the project's own pattern.  That local
@@ -136,57 +130,6 @@
  * because the file-scope one is refreshed from the counters by every assertion
  * and so cannot accumulate.
  */
-
-/*
- * THE FEATURE-TEST LEVEL, AND IT HAS TO BE SET HERE.  A feature-test macro
- * decides which declarations the C library's headers make visible, so it is
- * only effective before the FIRST #include -- which is why this block sits
- * above them rather than beside the code that needs it.  _DEFAULT_SOURCE and
- * not a _POSIX_C_SOURCE level, because param_util.h's protected-boundary
- * oracle needs MAP_ANONYMOUS, which is a Linux and BSD extension rather than a
- * POSIX flag; tests/test_err_death.c sets _POSIX_C_SOURCE for its own harness
- * because everything that one uses IS POSIX.  MEASURED on this host: glibc
- * reveals all of it under a bare -std=c99 anyway, so this buys portability
- * rather than fixing anything here, and param_util.h fails the compile with a
- * diagnostic naming the cause if a C library does gate them.  The same block
- * stands at the head of tests/test_num_get.c, for the same reason.
- */
-#ifdef LIBPROV_TEST_GUARD_PAGES
-# if !defined(_DEFAULT_SOURCE)
-#  define _DEFAULT_SOURCE 1
-# endif
-#endif
-
-/*
- * The instrumented memory oracle is a SECOND CONFIGURATION of this file (see
- * "THE ZERO-CAPACITY CLAMP" below), and it runs its cases through the forked
- * harness param_util.h provides under LIBPROV_TEST_GUARD_PAGES.  Asking for the
- * marker without that harness is a registration mistake, and one diagnosable
- * line naming the cause beats a cascade of implicit-declaration errors.
- */
-#if defined(LIBPROV_TEST_MEMORY_ORACLE) && !defined(LIBPROV_TEST_GUARD_PAGES)
-# error "LIBPROV_TEST_MEMORY_ORACLE needs LIBPROV_TEST_GUARD_PAGES too: the oracle runs each case in param_util.h's forked harness"
-#endif
-
-/*
- * The CTest target this compilation becomes, used as the label of the summary
- * line TEST_REPORT() prints.  It has to track the configuration, exactly as
- * GUARD_TARGET_NAME does in tests/test_err_guards.c and for the same reason:
- * both binaries are built from this one source, so a hard-coded label made the
- * instrumented target sign its own summary "test_num_set" and a reader of a
- * combined ctest log could not tell which of the two produced which counts, nor
- * that 535 and 579 are two different configurations rather than one flaky one.
- * Kept identical to the target names tests/CMakeLists.txt registers, so
- * `ctest -R <label>` selects exactly the binary that printed the line.
- *
- * Informational only: TEST_REPORT() derives the verdict from testutil.h's
- * assertion and mismatch counters, never from this string.
- */
-#ifdef LIBPROV_TEST_MEMORY_ORACLE
-# define SET_TARGET_NAME "test_num_set_memory"
-#else
-# define SET_TARGET_NAME "test_num_set"
-#endif
 
 #include "testutil.h"
 #include "param_util.h"
@@ -201,7 +144,7 @@
  * Every destination buffer in this file is this wide, whatever capacity the
  * OSSL_PARAM over it declares, and the bytes beyond that capacity are
  * asserted to still hold the sentinel.  That is what turns an out-of-bounds
- * write -- the shape of the padding-offset defect num.c:119 was repaired for
+ * write -- the shape of the padding-offset defect num.c:118 was repaired for
  * -- into an ordinary assertion failure rather than something only a
  * sanitizer notices.  The widest capacity any case declares is the larger of
  * 3 * sizeof(int) and sizeof(size_t) + sizeof(int), so this expression is
@@ -240,8 +183,8 @@ struct set_case {
  * Whether a return code is one the setters can actually produce.  The two it
  * excludes are the named exclusions proved in test_set_unreachable_docs():
  * PROVNUM_E_WRONG_TYPE, whose guard (num.c:58-59) tests a source data_type
- * num.c:161-163 hardcodes to an accepted one, and PROVNUM_E_UNSUPPORTED
- * (num.c:135), whose fallthrough needs a source sign the same lines hardcode
+ * num.c:160-162 hardcodes to an accepted one, and PROVNUM_E_UNSUPPORTED
+ * (num.c:134), whose fallthrough needs a source sign the same lines hardcode
  * to POSITIVE.
  */
 static int rc_is_reachable(int rc)
@@ -417,21 +360,18 @@ static size_t set_size_t_from_msb_first(const unsigned char *msb_first,
  * longer holds, and the call returns 1.
  *
  * WHY NO FIXTURE IN THIS FILE CAN CONTROL THAT BYTE.  For a setter, the source
- * is not the test's.  num.c:162 builds the source descriptor over `&src` -- the
+ * is not the test's.  num.c:161 builds the source descriptor over `&src` -- the
  * value parameter of provnum_set_size_t() or provnum_set_int() -- so the byte the
  * regressed loop reads is at ((unsigned char *)&src)[-1], inside the library
- * function's OWN stack frame.  A test owns its destination buffer and can put a
- * protected page against either end of it; it does not own the callee's frame
- * and cannot place anything against that, which is why the guarded group at the
- * end of this file pins the complementary property it CAN pin unconditionally --
- * that a zero-capacity call touches no byte of the destination -- rather than
- * this one.  Attempts that were tried and rejected, so they are not tried again:
- * painting the callee's frame from a noinline scratch function (nonportable, and
- * it makes the verdict depend on whether the compiler kept that frame),
- * sigaltstack and makecontext (the ABI's stack alignment stops &src from ever
- * landing on a page boundary), --wrap=memcpy (the read does not go through
- * memcpy), and _FORTIFY_SOURCE or UBSan (neither checks bounds for pointer
- * arithmetic on a stack object).
+ * function's OWN stack frame.  A test owns its destination buffer and could put a
+ * protected page against either end of it; it does not own the callee's frame and
+ * cannot place anything against that.  Attempts that were tried and rejected, so
+ * they are not tried again: painting the callee's frame from a noinline scratch
+ * function (nonportable, and it makes the verdict depend on whether the compiler
+ * kept that frame), sigaltstack and makecontext (the ABI's stack alignment stops
+ * &src from ever landing on a page boundary), --wrap=memcpy (the read does not go
+ * through memcpy), and _FORTIFY_SOURCE or UBSan (neither checks bounds for
+ * pointer arithmetic on a stack object).
  *
  * WHAT IS ASSERTED DETERMINISTICALLY, IN EVERY BUILD AND ON EVERY HOST.  The
  * full documented answer for a zero-capacity destination: PROVNUM_E_TOOBIG,
@@ -447,55 +387,38 @@ static size_t set_size_t_from_msb_first(const unsigned char *msb_first,
  * of -2 -- on 200 runs out of 200, because the byte below the frame on this host
  * happens to have its high bit clear.  That is a fact about this host and NOT a
  * guarantee; a measurement is not a mechanism, and this file does not treat it
- * as one.  An earlier version tried to turn it into one by painting the callee's
- * frame from a noinline scratch function; that was removed, because a verdict
- * that depends on whether the compiler kept a frame is not a verdict.
+ * as one.
  *
- * *** THE MECHANISM THAT DOES DECIDE IT: test_set_memory_oracle(), AT THE END
- * OF THIS FILE. ***
+ * *** THE MECHANISM THAT DOES DECIDE IT IS NOT A FIXTURE AT ALL. ***
  *
  * The access is out of bounds of a VARIABLE while remaining, in general, inside
  * the FUNCTION'S FRAME -- the setter's frame also holds `endian`, `destnd`,
  * `srcnd` and the result, and which of them sits immediately below `src` is the
  * compiler's business, not this file's.  That single fact rules out every
- * mechanism this file could otherwise reach: a protected page can only be placed
- * at an object the test owns, and painting or a guard page below the frame
- * cannot see an access that never leaves it.  What CAN see it is a checker with
+ * mechanism a fixture could reach: a protected page can only be placed at an
+ * object the test owns, and painting or a guard page below the frame cannot see
+ * an access that never leaves it.  What CAN see it is a checker with
  * PER-VARIABLE redzones, which is what AddressSanitizer's stack instrumentation
  * is; and for it to see this access, num.c itself must be the thing
  * instrumented.
  *
- * So this file is compiled a SECOND time, into a target of its own, together
- * with num.c and with -fsanitize=address applied to that target -- and only to
- * that target.  tests/CMakeLists.txt registers it as test_num_set_memory, gated
- * on a configure-time probe that proves the instrumentation compiles, links and
- * really does detect a one-byte stack under-read on the host doing the build;
- * where the probe fails the target is simply not registered, exactly as the two
- * other capability-gated targets behave.  Under LIBPROV_TEST_MEMORY_ORACLE the
- * group at the end of this file runs each memory case in param_util.h's forked
- * harness, so an instrumentation report becomes ONE NAMED ASSERTION FAILURE
- * naming the case rather than a dead test binary, and asserts the exact
- * documented answer alongside it.  Its first case is a deliberate under-read
- * that MUST be caught, so a run in which the instrumentation was not armed fails
- * instead of passing vacuously.
+ * That is a build configuration rather than a test case, and it is an OPT-IN
+ * one.  README.md documents it: configure a separate tree with
+ * -DCMAKE_C_FLAGS="-fsanitize=address,undefined -g -fno-omit-frame-pointer",
+ * which instruments num.c along with everything else, and run this suite in it
+ * together with the mutation spot-check that reverts the clamp.  It is
+ * deliberately NOT wired into the default build: the mandated command must stay
+ * byte for byte what it is, with no -D flag, no CMAKE_C_FLAGS and no sanitizer
+ * on libprov or on any target.
  *
- * Nothing about the mandated command changes: no -D flag, no CMAKE_C_FLAGS, no
- * sanitizer on libprov or on any of the other targets, and the ordinary
- * test_num_set stays exactly the uninstrumented executable it was.  The two
- * configurations of this one source mirror how tests/test_err_guards.c is
- * compiled twice, once with err.c's assertions live and once with NDEBUG,
- * because no single set of flags can exhibit both contracts at once.
- *
- * ONE COROLLARY WORTH KNOWING, asserted by the third zero-capacity case below
- * and again by the oracle group.  The loop compares the out-of-bounds byte's
- * high bit against src.sign's, and num.c:162 initialises the setter's srcnd.sign
- * to POSITIVE -- 0x00 -- UNCONDITIONALLY, whatever the value's own sign.  A
- * negative source's bytes are 0xFF, they do not equal that hardcoded pad, so
- * rule 1 fails on the FIRST iteration and the loop never reaches the source's
- * edge at all.  A negative zero-capacity case therefore cannot reach the defect
- * even in a reverted build, which is why the positive cases are the ones that
- * matter here -- and asserting that a negative one touches nothing outside its
- * source is what shows the oracle is specific rather than trigger-happy.
+ * ONE COROLLARY WORTH KNOWING, asserted by the third zero-capacity case below.
+ * The loop compares the out-of-bounds byte's high bit against src.sign's, and
+ * num.c:161 initialises the setter's srcnd.sign to POSITIVE -- 0x00 --
+ * UNCONDITIONALLY, whatever the value's own sign.  A negative source's bytes are
+ * 0xFF, they do not equal that hardcoded pad, so rule 1 fails on the FIRST
+ * iteration and the loop never reaches the source's edge at all.  A negative
+ * zero-capacity case therefore cannot reach the defect even in a reverted build,
+ * which is why the positive cases are the ones that matter here.
  */
 
 /*
@@ -654,30 +577,12 @@ static int test_set_size_t_bytes(void);
 static int test_set_errors(void);
 static int test_set_return_size_invariant(void);
 static int test_set_unreachable_docs(void);
-#ifdef LIBPROV_TEST_GUARD_PAGES
-static int test_set_guarded_boundaries(void);
-#endif
-#ifdef LIBPROV_TEST_MEMORY_ORACLE
-static int test_set_memory_oracle(void);
-#endif
 
 int main(void)
 {
     int ret = 1;
     int status;
 
-    /*
-     * THE MEMORY ORACLE RUNS FIRST, in the one configuration that has it.  Its
-     * cases are the only ones whose verdict is about an access inside num.c's
-     * own frame, and the instrumentation that decides them reports to stderr; a
-     * report is far easier to attribute to a case when the case's own assertion
-     * lines are the last thing before it in the log.  Nothing here depends on
-     * order -- every group seeds its own fixtures -- so putting it first costs
-     * nothing and buys a readable failure.
-     */
-#ifdef LIBPROV_TEST_MEMORY_ORACLE
-    ret &= test_set_memory_oracle();
-#endif
     ret &= test_set_int_happy();
     ret &= test_set_int_extremes();
     ret &= test_set_size_t_capacity();
@@ -685,15 +590,6 @@ int main(void)
     ret &= test_set_errors();
     ret &= test_set_return_size_invariant();
     ret &= test_set_unreachable_docs();
-    /*
-     * Declared, called and defined under one condition, rather than stubbed to
-     * a group that returns 1 where the oracle is unavailable: a group that
-     * asserts nothing has no business reporting success, and the seven above
-     * are unaffected either way.
-     */
-#ifdef LIBPROV_TEST_GUARD_PAGES
-    ret &= test_set_guarded_boundaries();
-#endif
 
     /*
      * testutil.h's report is the authority on the exit status: it derives it
@@ -702,7 +598,7 @@ int main(void)
      * is honoured as well; the two can disagree only if a group dropped a
      * verdict, in which case failing is the right answer.
      */
-    status = TEST_REPORT(SET_TARGET_NAME);
+    status = TEST_REPORT("test_num_set");
 
     return status != 0 || !ret ? 1 : 0;
 }
@@ -740,9 +636,9 @@ static int test_set_int_happy(void)
         /*
          * PADDING-OFFSET GUARD.  A destination three int widths deep takes the
          * value in its least significant sizeof(int) bytes and zero padding
-         * above: num.c:119 starts the padding at src.size on a LITTLE
-         * destination, and num.c:121-122 fills it with src.sign, hardcoded to
-         * POSITIVE by num.c:161-163 and defined as 0x00 at num.c:7.
+         * above: num.c:118 starts the padding at src.size on a LITTLE
+         * destination, and num.c:120-121 fills it with src.sign, hardcoded to
+         * POSITIVE by num.c:160-162 and defined as 0x00 at num.c:7.
          *
          * This shape is chosen because the unrepaired offset, dest.size -
          * src.size, evaluates to 8 here and would write dest[8 .. 15] into a
@@ -887,7 +783,7 @@ static int test_set_int_happy(void)
          * A negative int written into a destination wider than sizeof(int) is
          * ZERO padded, not sign extended, so a provnum_get_int() read back
          * does not recover the original value.  The mechanism is exact: the
-         * padding memset at num.c:121-122 writes src.sign, and num.c:161-163
+         * padding memset at num.c:120-121 writes src.sign, and num.c:160-162
          * hardcodes the source descriptor's sign to POSITIVE, which num.c:7
          * defines as 0x00.  The destination's own declared data_type has no
          * say, because it is consulted only at num.c:114 where the
@@ -1112,7 +1008,7 @@ static int test_set_int_extremes(void)
  * OSSL_PARAM_UNSIGNED_INTEGER, yet a one-byte destination accepts only the
  * values whose top bit is clear.
  *
- * The mechanism, exactly.  num.c:161-163 hardcodes the SOURCE descriptor's
+ * The mechanism, exactly.  num.c:160-162 hardcodes the SOURCE descriptor's
  * sign to POSITIVE for the setter direction, which num.c:7 defines as 0x00.
  * The padding-strip loop at num.c:92-96 may therefore drop a leading byte
  * only while BOTH rules hold: rule 1 (stated at num.c:85-86, tested at
@@ -1164,7 +1060,7 @@ static int test_set_size_t_capacity(void)
          * destination, is REFUSED even though a single unsigned byte plainly
          * represents it.  Nothing about the destination's declared
          * OSSL_PARAM_UNSIGNED_INTEGER type changes that; only the source
-         * sign hardcoded at num.c:161-163 governs the strip loop.
+         * sign hardcoded at num.c:160-162 governs the strip loop.
          *
          * set_size_t_refused_value() derives the same value the pair's first
          * member is one below, converting it only under the gate this block
@@ -1347,8 +1243,8 @@ static int test_set_size_t_capacity(void)
 /*
  * Byte-level output for provnum_set_size_t(), where the question is not
  * whether a value fits but WHERE each of its bytes lands.  nativeendian()
- * (num.c:9-14) drives both the destination offset chosen at num.c:125 and the
- * source offset at num.c:126, so every expectation here is laid out by
+ * (num.c:9-14) drives both the destination offset chosen at num.c:124 and the
+ * source offset at num.c:125, so every expectation here is laid out by
  * param_util.h from a logical description -- a most-significant-byte-first
  * pattern, or a value plus a padding width -- and never as a literal byte
  * string that would only be right on one byte order.
@@ -1429,7 +1325,7 @@ static int test_set_size_t_bytes(void)
 
     {
         /*
-         * PADDING-OFFSET GUARD on the OTHER instantiation.  num.c:119 is
+         * PADDING-OFFSET GUARD on the OTHER instantiation.  num.c:118 is
          * shared code, but each instantiation reaches it with a different
          * sizeof(T), so the size_t half needs its own over-wide destination:
          * the value lands in the least significant sizeof(size_t) bytes and
@@ -1500,7 +1396,7 @@ static int test_set_errors(void)
     {
         /*
          * A parameter with a declared size but no buffer.  provnum_copy()
-         * reaches num.c:105-108 and answers PROVNUM_E_NULL; num.c:166 still
+         * reaches num.c:105-108 and answers PROVNUM_E_NULL; num.c:165 still
          * assigns return_size, which is exactly the kind of error-path side
          * effect a suite that only checked return codes would miss.
          */
@@ -1554,21 +1450,15 @@ static int test_set_errors(void)
          * no fixture here can control; measured on this host it does, 200 runs
          * out of 200, but that is a measurement and not a mechanism.
          *
-         * THE MECHANISM IS test_set_memory_oracle() at the end of this file.
-         * This same input, run in param_util.h's forked harness by the second
-         * configuration of this source -- the one tests/CMakeLists.txt compiles
-         * together with num.c under -fsanitize=address as test_num_set_memory --
-         * turns the out-of-bounds read itself into one named assertion failure,
-         * on any host and whatever answer the byte would have produced.  The
-         * comment headed "THE ZERO-CAPACITY CLAMP: WHAT OBSERVES A REGRESSION,
-         * AND WHAT CANNOT" gives the reasoning, the rejected alternatives and why
-         * per-variable instrumentation of num.c is the only thing that can see an
-         * access which never leaves the library function's own frame.
-         *
-         * test_set_guarded_boundaries() pins the neighbouring property that IS
-         * reachable without instrumentation: with this same capacity of zero and
-         * the destination pointer aimed into a protected page, a correct library
-         * must still answer PROVNUM_E_TOOBIG without touching one byte of it.
+         * WHAT DOES DECIDE IT is the opt-in -fsanitize=address,undefined
+         * configuration documented in README.md, run alongside the mutation
+         * spot-check that reverts the clamp: AddressSanitizer's per-variable
+         * stack redzones see the under-read itself, whatever answer the byte
+         * would have produced.  The comment headed "THE ZERO-CAPACITY CLAMP:
+         * WHAT OBSERVES A REGRESSION, AND WHAT CANNOT" gives the reasoning and
+         * the alternatives that were tried and rejected, and explains why
+         * per-variable instrumentation of num.c is the only thing that can see
+         * an access which never leaves the library function's own frame.
          *
          * run_set_case() compares the WHOLE buffer against the sentinel here,
          * not the declared capacity: a comparison of zero bytes inspects
@@ -1607,7 +1497,7 @@ static int test_set_errors(void)
          * pinning for exactly that reason.
          *
          * The setter half of implement_provnum() hardcodes srcnd.sign to
-         * POSITIVE at num.c:162 whatever the value is, so rule 1 (num.c:93)
+         * POSITIVE at num.c:161 whatever the value is, so rule 1 (num.c:93)
          * compares each source byte against 0x00.  A negative int's bytes are
          * 0xFF, they do not match, and the loop therefore breaks on its FIRST
          * iteration with src.size still at its full width -- which is greater
@@ -1737,7 +1627,7 @@ static int test_set_errors(void)
      *
      * provnum_set_int(&param, -1) into a TWO-BYTE destination answers
      * PROVNUM_E_TOOBIG.  The mechanism is the same hardcoded sign as
-     * everywhere else in this file: num.c:161-163 sets the source sign to
+     * everywhere else in this file: num.c:160-162 sets the source sign to
      * POSITIVE == 0x00 (num.c:7), so the 0xFF bytes of -1 fail rule 1 at
      * num.c:93 at the first iteration, the source keeps its full sizeof(int)
      * width, and num.c:98-101 refuses it.
@@ -1766,7 +1656,7 @@ static int test_set_errors(void)
  * The return_size side effect, swept across every reachable path of both
  * instantiations at once.
  *
- * num.c:166 assigns param->return_size unconditionally from result.size, which
+ * num.c:165 assigns param->return_size unconditionally from result.size, which
  * num.c:56 set to the DESTINATION's declared size and no other line writes, so
  * param->return_size == param->data_size holds identically on success, on
  * PROVNUM_E_TOOBIG and on PROVNUM_E_NULL.  A table that deliberately mixes all
@@ -2014,23 +1904,23 @@ static int check_no_unreachable_code(const char *what, unsigned int data_type,
  * rather than assumption.
  *
  * PROVNUM_E_WRONG_TYPE (-1) IS UNREACHABLE.  The guard at num.c:58-59 tests
- * src.data_type, and num.c:161-163 hardcodes that member to the macro
- * parameter DT: OSSL_PARAM_UNSIGNED_INTEGER at num.c:170 and
- * OSSL_PARAM_INTEGER at num.c:171, precisely the two types the guard accepts.
+ * src.data_type, and num.c:160-162 hardcodes that member to the macro
+ * parameter DT: OSSL_PARAM_UNSIGNED_INTEGER at num.c:169 and
+ * OSSL_PARAM_INTEGER at num.c:170, precisely the two types the guard accepts.
  * It reads the SOURCE's type and not the destination's, which is why the sweep
  * below can walk every OSSL_PARAM data type without producing -1.
  *
- * PROVNUM_E_UNSUPPORTED (-3) IS UNREACHABLE.  The fallthrough at num.c:135 is
+ * PROVNUM_E_UNSUPPORTED (-3) IS UNREACHABLE.  The fallthrough at num.c:134 is
  * reached only when the simple-case condition at num.c:111-114 is false.  Its
  * last clause is "(dest.data_type == OSSL_PARAM_INTEGER || src.sign ==
- * POSITIVE)" and num.c:161-163 hardcodes src.sign to POSITIVE; the other three
- * clauses are always true as well, because num.c:157-163 give destination and
+ * POSITIVE)" and num.c:160-162 hardcodes src.sign to POSITIVE; the other three
+ * clauses are always true as well, because num.c:156-162 give destination and
  * source the same endianness from nativeendian(), a limbsize of 1 and a
- * limbnailbits of 0.  The condition cannot be false, so num.c:135 is dead
+ * limbnailbits of 0.  The condition cannot be false, so num.c:134 is dead
  * here.
  *
  * The empty-source shortcut at num.c:64-68 and the null-source guard at
- * num.c:70-73 are unreachable for the same reason: num.c:161-163 sets src.size
+ * num.c:70-73 are unreachable for the same reason: num.c:160-162 sets src.size
  * to sizeof(T), never zero, and src.data to the address of the setter's own
  * parameter, never null.  Both belong to the getter direction, where
  * tests/test_num_get.c reaches them.
@@ -2097,945 +1987,3 @@ static int test_set_unreachable_docs(void)
 
     return ret;
 }
-
-#ifdef LIBPROV_TEST_GUARD_PAGES
-/*
- * ===========================================================================
- * THE DESTINATION AGAINST A PROTECTED PAGE
- * ===========================================================================
- * The rest of this file bounds a setter's writes by making every destination
- * buffer wider than the capacity its OSSL_PARAM declares and asserting that the
- * margin still holds the sentinel.  That catches an over-write as a MISMATCH,
- * which is already deterministic and is not being replaced.  What it cannot do
- * is bound the buffer itself: the margin is only as wide as it is, and a
- * mismatch says a byte changed rather than that a byte outside the object was
- * touched.
- *
- * So the four cases below hand the library a destination flush against a
- * PROT_NONE page and let the hardware answer instead, under the mandated
- * flagless command and with no build flag.  param_util.h's protected-boundary
- * oracle owns the mechanism -- three pages, the outer two unreadable, the
- * fixture run in a forked child so a fault is a named assertion failure rather
- * than a dead test binary -- and explains why a correct library cannot be made
- * to fail by it.
- *
- * WHAT EACH CASE PINS:
- *
- *   high edge, over-wide   the padding offset at num.c:119.  A 3 * sizeof(int)
- *                          capacity fed a sizeof(int) source leaves the pad to
- *                          cover [src.size, dest.size); the reverted
- *                          dest.size - src.size aims it at [8, 16) of a
- *                          12-byte object, four bytes past the end -- which is
- *                          the protected page.
- *   low edge, over-wide    the mirror bound: a correct conversion writes
- *                          nothing BELOW the destination either, whatever the
- *                          pad offset and the copy offset are computed from.
- *   zero capacity          that a capacity of zero is refused without the
- *                          destination being touched AT ALL.  The pointer aims
- *                          at the first byte of the protected page, so any read
- *                          or write of it faults; the answer must still be
- *                          PROVNUM_E_TOOBIG with return_size 0.
- *   narrow refusal         that a value too wide for the capacity is refused
- *                          before anything is written, with the one available
- *                          byte still holding its sentinel and the byte above
- *                          it protected.  The value is DERIVED --
- *                          set_size_t_refused_value(1), which is
- *                          param_max_signed_in(1) + 1 -- and the case stands
- *                          behind the same set_size_t_width_refuses(1) band gate
- *                          its unguarded twin in test_set_size_t_capacity()
- *                          does, so it tracks CHAR_BIT instead of asserting this
- *                          ABI.
- *
- * AND WHAT NONE OF THEM PINS UNCONDITIONALLY: a regression of the zero-capacity
- * clamp at num.c:91.  That defect reads below provnum_set_*'s own `src`
- * parameter, inside the library's frame, so whether it changes the answer these
- * cases assert is decided by a byte no fixture here controls -- the guarded
- * zero-capacity case is exactly as host-dependent in that respect as its
- * unguarded twins, and what it adds over them is the destination-untouched
- * guarantee, which is not host-dependent at all.  A protected page can only ever
- * be placed at an object the TEST owns; it cannot bound a variable inside a
- * callee.  test_set_memory_oracle(), immediately below this group, is the
- * mechanism for that one defect, and the comment headed "THE ZERO-CAPACITY
- * CLAMP: WHAT OBSERVES A REGRESSION, AND WHAT CANNOT" sets out why per-variable
- * instrumentation of num.c is the only thing that can see it.
- */
-
-# include <stdio.h>
-
-/*
- * The same two helpers tests/test_num_get.c has, and deliberately not hoisted
- * into param_util.h: that header owns FIXTURES, and a verdict helper needs
- * testutil.h's assertion macros, so hoisting it would make the fixture layer
- * depend on the assertion layer.  Three other files in this suite each carry
- * their own label composer for the same reason.  Given a nonzero capacity
- * snprintf() truncates rather than overruns, and its result is not consulted
- * because the assertion prints its own file and line.
- */
-# define GUARD_LABEL_MAX 96
-
-static const char *guard_label(char *buffer, size_t capacity,
-                               const char *casename, const char *property)
-{
-    if (buffer == NULL || capacity == 0)
-        return "guard: <no label buffer>";
-
-    snprintf(buffer, capacity, "guard %s: %s", casename, property);
-    return buffer;
-}
-
-/*
- * `error` means the harness broke and says nothing about num.c; `signo` names
- * the signal that killed the child, which is the whole diagnosis when a guard
- * page was touched; `completed` -- exited normally with status 0, NOT merely
- * "was not signalled" -- is the verdict each case is stated in terms of, and it
- * is spelled that way so it means the same under the opt-in
- * -fsanitize=address configuration, where a fault becomes a report and a
- * non-zero exit rather than a signal.
- */
-static int guard_verdict_completed(const char *casename,
-                                   const struct param_guard_verdict *verdict)
-{
-    char label[GUARD_LABEL_MAX];
-    int ret = 1, test;
-
-    TEST_ASSERT_INT_EQ(guard_label(label, sizeof label, casename, "harness"),
-                       verdict->error, 0);
-    ret &= test;
-    TEST_ASSERT_INT_EQ(guard_label(label, sizeof label, casename,
-                                   "killed by signal"),
-                       verdict->signo, 0);
-    ret &= test;
-    TEST_ASSERT_INT_EQ(guard_label(label, sizeof label, casename,
-                                   "completed normally"),
-                       verdict->completed, 1);
-    ret &= test;
-
-    return ret;
-}
-
-/*
- * The descriptor invariant a SETTER owes, which is not param_identical()'s.  A
- * setter writes param->return_size by contract (num.c:166), so the whole
- * representation is expected to differ; what must survive is everything else.
- * The four members are compared individually and the verdict is carried in the
- * record's param_unchanged field, which the parent asserts as 1.
- */
-static int guard_descriptor_survived(const OSSL_PARAM *param,
-                                     const OSSL_PARAM *before)
-{
-    return param->key == before->key
-           && param->data_type == before->data_type
-           && param->data == before->data
-           && param->data_size == before->data_size;
-}
-
-/*
- * Three times sizeof(int), so a sizeof(int) source leaves twice its own width
- * to pad and the correct offset (src.size) and the reverted one
- * (dest.size - src.size) land in different places -- at src.size == dest.size / 2
- * they would coincide and the case would prove nothing.
- *
- * It is also the widest fixture any guarded body in the suite hands back
- * through the shared record, which is why param_util.h derives
- * PARAM_GUARD_BYTES from this shape rather than from a literal.  Being a
- * NATIVE width it has no ceiling the language promises, so every body below
- * that copies bytes into the record asks param_guard_record_fits() FIRST and
- * reports PARAM_GUARD_RC_UNBUILT rather than building anything -- a body that
- * checked afterwards would have checked by overrunning a shared mapping.
- */
-# define SET_GUARD_WIDE_BYTES (3 * sizeof(int))
-
-/*
- * The over-wide destination, at whichever edge the caller placed it.  A body
- * runs in the forked child, so it neither asserts nor prints, and it seeds its
- * own fixture there: the mapping is MAP_PRIVATE, so nothing it writes is visible
- * to the parent or to a later child, which is what keeps the cases independent
- * of one another and of their order.
- */
-static void guard_set_wide(struct param_guard_record *record,
-                           unsigned char *dest)
-{
-    OSSL_PARAM param;
-    OSSL_PARAM before;
-
-    if (dest == NULL
-        || !param_guard_record_fits(SET_GUARD_WIDE_BYTES)
-        || !param_fill_sentinel(dest, SET_GUARD_WIDE_BYTES)) {
-        record->rc = PARAM_GUARD_RC_UNBUILT;
-        return;
-    }
-
-    param_build(&param, OSSL_PARAM_INTEGER, dest, SET_GUARD_WIDE_BYTES);
-    param_snapshot(&before, &param);
-    record->rc = provnum_set_int(&param, 5);
-    record->return_size = param.return_size;
-    record->param_unchanged = guard_descriptor_survived(&param, &before);
-    record->nbytes = SET_GUARD_WIDE_BYTES;
-    memcpy(record->bytes, dest, SET_GUARD_WIDE_BYTES);
-}
-
-static void guard_body_set_dest_high_edge(struct param_guard_record *record,
-                                          const struct param_guard *guard)
-{
-    guard_set_wide(record, param_guard_at_high(guard, SET_GUARD_WIDE_BYTES));
-}
-
-static void guard_body_set_dest_low_edge(struct param_guard_record *record,
-                                         const struct param_guard *guard)
-{
-    guard_set_wide(record, param_guard_at_low(guard, SET_GUARD_WIDE_BYTES));
-}
-
-/*
- * A ZERO-CAPACITY DESTINATION WHOSE POINTER IS NOT DEREFERENCEABLE.  guard->high
- * is the first byte of the upper protected page, so this fixture is a valid,
- * non-null pointer that cannot be read or written -- which is exactly the shape
- * that turns "the zero-capacity path does not touch the destination" from a
- * reading of the source into an assertion.  A source of sizeof(size_t) bytes
- * cannot be narrowed below one and one is greater than zero, so the documented
- * answer is PROVNUM_E_TOOBIG with return_size 0.
- */
-static void guard_body_set_zero_capacity(struct param_guard_record *record,
-                                         const struct param_guard *guard)
-{
-    OSSL_PARAM param;
-    OSSL_PARAM before;
-
-    if (guard->high == NULL
-        || !param_build_empty(&param, OSSL_PARAM_UNSIGNED_INTEGER,
-                              guard->high)) {
-        record->rc = PARAM_GUARD_RC_UNBUILT;
-        return;
-    }
-
-    param_snapshot(&before, &param);
-    record->rc = provnum_set_size_t(&param, (size_t)0);
-    record->return_size = param.return_size;
-    record->param_unchanged = guard_descriptor_survived(&param, &before);
-}
-
-/*
- * A REFUSAL AT THE EDGE.  One byte of capacity, flush against the protected
- * page, and the smallest value that byte cannot hold once the padding-strip
- * rules have reserved the sign bit -- the same value test_set_size_t_capacity()
- * pins as the upper half of an ordinary boundary pair.  Here the point is
- * different: the refusal must happen with NOTHING WRITTEN, so the one available
- * byte still holds its sentinel and the byte above it is unreachable.
- *
- * THE VALUE IS DERIVED, NOT TRANSCRIBED.  set_size_t_refused_value(1) is
- * param_max_signed_in(1) + 1, which is CHAR_BIT arithmetic: 128 on a host with
- * eight-bit bytes and the right answer on a host without them.  It was the
- * literal 128 until the derivation replaced it, and that was the single place in
- * this file where a width edge was transcribed rather than computed -- the whole
- * reason the helpers above the case tables exist is that a transcribed edge
- * asserts an ABI instead of a contract.  MEASURED on this host: the derivation
- * yields exactly 128, so the case's behaviour here is unchanged.  Routing the
- * value through the helper also keeps its conversion behind the same predicate
- * that proves it well defined.
- *
- * AND THE CALLER MUST HAVE ESTABLISHED set_size_t_width_refuses(1), exactly as
- * the unguarded pair's two blocks stand behind that same gate and as
- * param_put_host_order()'s callers stand behind set_size_t_width_holds().  The
- * predicate is what makes the refusal well posed: a one-byte destination can
- * only REFUSE when it is genuinely narrower than the source (num.c:98-101
- * compares the stripped source width against the declared capacity), and C99
- * fixes only SIZE_MAX >= 65535, which a single 16-bit byte satisfies at
- * sizeof(size_t) == 1.  The gate is therefore not optional politeness: where the
- * band is inexpressible set_size_t_refused_value() answers 0 -- a value a
- * one-byte destination holds perfectly well -- so an ungated case would quietly
- * turn from a refusal into a success while still asserting PROVNUM_E_TOOBIG
- * against it.  Asking it in the GROUP rather than here keeps the band present in
- * full or absent in full, which is the convention the rest of this file's
- * boundary pairs follow, and keeps the value's conversion behind the proof that
- * it is exact (C99 6.3.1.3p3 leaves an out-of-range conversion
- * implementation-defined).  This body still reports PARAM_GUARD_RC_UNBUILT if it
- * is ever reached unguarded, so the exclusion is named rather than silent.
- * Under the predicate the answer is ABI-general: the value's top bit sits in the
- * least significant byte, so the strip loop cannot get below two bytes and two
- * is greater than one.
- */
-static void guard_body_set_narrow_refusal(struct param_guard_record *record,
-                                          const struct param_guard *guard)
-{
-    unsigned char *dest = param_guard_at_high(guard, (size_t)1);
-    OSSL_PARAM param;
-    OSSL_PARAM before;
-
-    if (dest == NULL
-        || !set_size_t_width_refuses((size_t)1)
-        || !param_guard_record_fits((size_t)1)
-        || !param_fill_sentinel(dest, (size_t)1)) {
-        record->rc = PARAM_GUARD_RC_UNBUILT;
-        return;
-    }
-
-    param_build(&param, OSSL_PARAM_UNSIGNED_INTEGER, dest, (size_t)1);
-    param_snapshot(&before, &param);
-    record->rc = provnum_set_size_t(&param, set_size_t_refused_value((size_t)1));
-    record->return_size = param.return_size;
-    record->param_unchanged = guard_descriptor_survived(&param, &before);
-    record->nbytes = 1;
-    record->bytes[0] = dest[0];
-}
-
-static int test_set_guarded_boundaries(void)
-{
-    struct param_guard guard;
-    struct param_guard_record *record;
-    struct param_guard_verdict verdict;
-    unsigned char expected[SET_GUARD_WIDE_BYTES];
-    int ret = 1, test;
-
-    /*
-     * Expressibility first, in the same spirit as this file's other gates -- and
-     * BLOCKING, which is the part that matters.  The record hands back a bounded
-     * number of bytes and the widest case here is a native width, so a case
-     * wider than the record would not merely compare a truncated destination:
-     * the child would write past `bytes` in a shared mapping to produce it.
-     * Recording the mismatch and carrying on would therefore not prevent the
-     * thing it warns about, so this returns instead.  It returns BEFORE the
-     * mapping and the shared record are opened, so nothing is owed to cleanup on
-     * the way out, and the assertion above it means the run still fails loudly
-     * rather than quietly losing the group.
-     */
-    TEST_ASSERT_INT_EQ("guard setup: wide destination fits the record",
-                       param_guard_record_fits(SET_GUARD_WIDE_BYTES), 1);
-    ret &= test;
-    if (!param_guard_record_fits(SET_GUARD_WIDE_BYTES))
-        return 0;
-
-    /*
-     * The mapping and the shared record are ASSERTED, not probed: a registered
-     * target must not become a vacuous pass because mmap() refused.  Both are
-     * released on every return below, including the early ones.
-     */
-    TEST_ASSERT_INT_EQ("guard setup: mapping established",
-                       param_guard_open(&guard), 1);
-    ret &= test;
-    if (guard.low == NULL)
-        return 0;
-
-    record = param_guard_record_open();
-    TEST_ASSERT_PTR_NOT_NULL("guard setup: shared record", record);
-    ret &= test;
-    if (record == NULL) {
-        param_guard_close(&guard);
-        return 0;
-    }
-
-    /*
-     * THE SELF-TEST, AND IT RUNS FIRST.  It reads the byte immediately below the
-     * writable page, which the protection must make fatal.  A run in which THAT
-     * completes is a run in which the guard pages were not armed, and every
-     * "completed normally" verdict below would be vacuous.  Asserted as
-     * completed == 0 and nothing more: which signal, or whether a sanitizer
-     * turned the fault into an exit status instead, is no part of the claim.
-     */
-    verdict = param_guard_run(param_guard_body_self_test, record, &guard);
-    TEST_ASSERT_INT_EQ("guard selftest: harness", verdict.error, 0);
-    ret &= test;
-    TEST_ASSERT_INT_EQ("guard selftest: protection armed", verdict.completed, 0);
-    ret &= test;
-
-    /*
-     * One expectation for both over-wide cases, because both are the same
-     * conversion: the value in the least significant sizeof(int) bytes and zero
-     * padding above it, laid out for the host's byte order.  Zero and not sign
-     * fill even though 5 is positive anyway -- num.c:162 hardcodes the setter's
-     * source sign to POSITIVE, which is 0x00.
-     */
-    TEST_ASSERT_INT_EQ("guard wide: expectation",
-                       param_expect_zero_padded(expected, sizeof expected,
-                                                (uintmax_t)5, sizeof(int)), 1);
-    ret &= test;
-
-    {
-        verdict = param_guard_run(guard_body_set_dest_high_edge, record, &guard);
-        ret &= guard_verdict_completed("set dest high edge", &verdict);
-        TEST_ASSERT_INT_EQ("guard set dest high edge: rc", record->rc, 1);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("guard set dest high edge: return_size",
-                            record->return_size, SET_GUARD_WIDE_BYTES);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("guard set dest high edge: bytes recorded",
-                            record->nbytes, sizeof expected);
-        ret &= test;
-        TEST_ASSERT_MEM_EQ("guard set dest high edge: destination bytes",
-                           record->bytes, expected, sizeof expected);
-        ret &= test;
-        TEST_ASSERT_INT_EQ("guard set dest high edge: descriptor",
-                           record->param_unchanged, 1);
-        ret &= test;
-    }
-
-    {
-        verdict = param_guard_run(guard_body_set_dest_low_edge, record, &guard);
-        ret &= guard_verdict_completed("set dest low edge", &verdict);
-        TEST_ASSERT_INT_EQ("guard set dest low edge: rc", record->rc, 1);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("guard set dest low edge: return_size",
-                            record->return_size, SET_GUARD_WIDE_BYTES);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("guard set dest low edge: bytes recorded",
-                            record->nbytes, sizeof expected);
-        ret &= test;
-        TEST_ASSERT_MEM_EQ("guard set dest low edge: destination bytes",
-                           record->bytes, expected, sizeof expected);
-        ret &= test;
-        TEST_ASSERT_INT_EQ("guard set dest low edge: descriptor",
-                           record->param_unchanged, 1);
-        ret &= test;
-    }
-
-    {
-        verdict = param_guard_run(guard_body_set_zero_capacity, record, &guard);
-        ret &= guard_verdict_completed("set zero capacity", &verdict);
-        TEST_ASSERT_INT_EQ("guard set zero capacity: rc", record->rc,
-                           PROVNUM_E_TOOBIG);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("guard set zero capacity: return_size",
-                            record->return_size, (size_t)0);
-        ret &= test;
-        TEST_ASSERT_INT_EQ("guard set zero capacity: descriptor",
-                           record->param_unchanged, 1);
-        ret &= test;
-    }
-
-    /*
-     * THE SAME BAND GATE THE UNGUARDED PAIR IN test_set_size_t_capacity() STANDS
-     * BEHIND, and for the same reasons: PROVNUM_E_TOOBIG is the documented
-     * answer for a one-byte destination only where that destination is genuinely
-     * narrower than a size_t, and the value it must refuse --
-     * param_max_signed_in(1) + 1, derived rather than transcribed -- has to be
-     * representable in a size_t before it can be passed.
-     * set_size_t_width_refuses() asks both at once, so the case is present in
-     * full or absent in full and no value is converted before the conversion has
-     * been shown to be exact.  A host with sizeof(size_t) == 1 -- which C99
-     * permits, since SIZE_MAX >= 65535 is a statement about the type's range and
-     * a single 16-bit byte satisfies it -- has nothing to refuse, and the case is
-     * a NAMED exclusion there rather than a silent gap: the body reports
-     * PARAM_GUARD_RC_UNBUILT if it is ever reached unguarded, and the
-     * destination-untouched property this case adds over its unguarded twins is
-     * meaningless without a refusal to observe.  The gate holds on every host
-     * with a size_t wider than one byte, which is every host this suite has been
-     * run on.
-     */
-    if (set_size_t_width_refuses((size_t)1)) {
-        verdict = param_guard_run(guard_body_set_narrow_refusal, record, &guard);
-        ret &= guard_verdict_completed("set narrow refusal", &verdict);
-        TEST_ASSERT_INT_EQ("guard set narrow refusal: rc", record->rc,
-                           PROVNUM_E_TOOBIG);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("guard set narrow refusal: return_size",
-                            record->return_size, (size_t)1);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("guard set narrow refusal: bytes recorded",
-                            record->nbytes, (size_t)1);
-        ret &= test;
-        TEST_ASSERT_UINT_EQ("guard set narrow refusal: destination untouched",
-                            record->bytes[0], PARAM_SENTINEL_BYTE);
-        ret &= test;
-        TEST_ASSERT_INT_EQ("guard set narrow refusal: descriptor",
-                           record->param_unchanged, 1);
-        ret &= test;
-    }
-
-    param_guard_record_close(record);
-    param_guard_close(&guard);
-
-    return ret;
-}
-#endif                          /* LIBPROV_TEST_GUARD_PAGES */
-
-#ifdef LIBPROV_TEST_MEMORY_ORACLE
-/*
- * ===========================================================================
- * THE INSTRUMENTED MEMORY ORACLE
- * ===========================================================================
- * WHAT THIS GROUP EXISTS FOR, in one sentence: to make a regression of the
- * zero-capacity clamp at num.c:91 fail an assertion by NAME, on any host,
- * whatever value happens to sit below the library's stack frame.
- *
- * WHY NOTHING ELSE IN THIS FILE CAN DO IT.  Without the clamp, the strip loop's
- * bound `end` is 0, the condition at num.c:92 stays true until src.size reaches
- * 0, and the rule-2 read at num.c:94 indexes ONE BYTE BELOW provnum_set_*'s own
- * `src` parameter -- num.c:162 builds the source descriptor over &src, so the
- * object read out of bounds belongs to the LIBRARY, not to the test.  Three
- * consequences follow, and together they close off every other mechanism:
- *
- *   The test owns no fixture there.  A PROT_NONE page can only be placed at an
- *   object this file allocates; it cannot be placed below a callee's local.
- *   test_set_guarded_boundaries() bounds the DESTINATION, which is a different
- *   object, and says nothing about this one.
- *
- *   The access does not leave the frame.  MEASURED frame layout for
- *   provnum_set_size_t on this host: src at offset [32, 40), result at [64, 80),
- *   destnd at [96, 152), srcnd at [192, 248).  `src` is not the lowest object,
- *   so &src - 1 is an address the frame itself covers.  A guard page below the
- *   frame, a custom stack, painting the frame from a scratch function -- none of
- *   them can observe an access that never crosses the frame's own boundary, and
- *   the last of those was tried in an earlier version of this file and removed
- *   because its verdict depended on whether the compiler kept a frame at all.
- *
- *   The answer it produces is not reliably wrong.  The read decides one
- *   comparison; on a host where that byte's high bit is clear the reverted
- *   library still returns PROVNUM_E_TOOBIG and every contract assertion in this
- *   file still passes.  Measured here it does change the answer, 200 runs out of
- *   200 -- but a measurement on one host is not a mechanism, and this group
- *   exists precisely so the claim does not rest on one.
- *
- * WHAT IS LEFT IS PER-VARIABLE INSTRUMENTATION OF num.c, which is what
- * AddressSanitizer's stack redzones are, and it has to be applied to num.c
- * rather than to the test: the out-of-bounds object is the library's.  So
- * tests/CMakeLists.txt compiles THIS SOURCE a second time together with num.c
- * under -fsanitize=address, as the target test_num_set_memory, and defines
- * LIBPROV_TEST_MEMORY_ORACLE for it.  Those flags are per-target: libprov, the
- * ordinary test_num_set and every other target are untouched, CMAKE_C_FLAGS is
- * not written to, and the mandated flagless command stays exactly what it was.
- * Registration is gated on a configure-time probe that compiles, links AND RUNS
- * an instrumented one-byte stack under-read and requires it to be reported; a
- * host where that fails does not get the target, the same way the other two
- * capability-gated targets behave.  This is the same "one source, two
- * configurations" arrangement tests/test_err_guards.c uses for err.c's
- * assert()-live and NDEBUG contracts, and for the same reason: no single set of
- * flags exhibits both things that need asserting.
- *
- * HOW A REPORT BECOMES AN ASSERTION RATHER THAN A DEAD BINARY.  Each case runs
- * in param_util.h's forked harness.  An instrumentation report ends the CHILD
- * with a non-zero exit status, and the harness's `completed` predicate is
- * spelled "exited normally with status 0" rather than "was not signalled"
- * exactly so that a report and a signal read the same -- so the parent turns it
- * into one named failure, keeps running, and still reports every other case.
- *
- * AND WHY THIS GROUP RUNS FIRST, which is a correctness point and not a
- * cosmetic one.  test_set_errors() and test_set_return_size_invariant() feed the
- * same zero-capacity input to the library DIRECTLY, in the parent, because
- * unguarded contract assertions are all they need.  Under a reverted library the
- * instrumentation reports there too, and a report in the parent ends the run --
- * so if this group ran last its verdicts would never be reached.  Running first
- * means the named diagnosis is already in the log before that can happen.
- * MEASURED against a reverted num.c: thirteen named failures from this group,
- * every one of them attributing the fault to num.c's strip loop, and then the
- * run ends early -- which is itself a failure, so nothing is lost.  Against the
- * repaired library the whole file completes with every assertion passing.
- *
- * WHY THE FIRST CASE IS A DELIBERATE UNDER-READ.  If the instrumentation were
- * absent -- a target built without the flags, a probe that passed for the wrong
- * reason -- every other case here would complete and the group would pass
- * having proved nothing.  O-1 reads one byte below a stack object whose address
- * has escaped and REQUIRES that not to complete.  It is the same
- * armed-protection self-test discipline param_guard_body_self_test() applies to
- * the guard pages, applied to the checker this group depends on.
- *
- * AND WHY A NEGATIVE SOURCE IS HERE TOO, in O-5.  An oracle that fires on
- * everything diagnoses nothing.  num.c:162 hardcodes the setter's srcnd.sign to
- * POSITIVE -- 0x00 -- so a negative value's 0xFF bytes fail rule 1 on the FIRST
- * iteration and the loop never approaches the source's edge.  That case must
- * come back clean even from a reverted library, and asserting so is what shows
- * the group's verdict is about the defect rather than about running under a
- * checker.  MEASURED against the reverted num.c that fails O-2, O-3 and O-4:
- * O-5 passes every one of its eight assertions, so the group discriminates.
- */
-
-/*
- * O-1.  THE ARMED-INSTRUMENTATION SELF-TEST, and the parent requires it to
- * FAIL to complete.
- *
- * `probe` is an ordinary automatic array and the read is one byte below it.  Two
- * details make that a reliable probe rather than something a compiler may
- * discard, and both are deliberate:
- *
- *   The address is published through a VOLATILE POINTER, so the compiler must
- *   materialise it and reload it, which defeats folding the -1 back into a
- *   direct access and -- more importantly -- makes the array address-escaping,
- *   which is the condition under which per-variable redzones are placed around
- *   it at all.  The pointer is volatile; the pointee is not.  It is a LOCAL and
- *   not a file-static sink, because storing the address of an automatic into an
- *   object that outlives it is what -Wdangling-pointer= exists to report, and
- *   the first version of this body earned exactly that warning in the
- *   uninstrumented configuration.  A local carries the same escape without the
- *   lie about lifetime.  MEASURED with a standalone probe at -O0, -O1 and -O2:
- *   detected at every level, and warning-free at -Wall -Wextra -pedantic.
- *
- *   The read is through a volatile-qualified pointee as well, so it cannot be
- *   dropped as a dead load, and the value is stored into the record so it is
- *   also used.
- *
- * An UNinstrumented build reads a neighbouring stack byte, completes, and the
- * parent's `completed == 0` assertion fails by name -- which is the whole point:
- * this group must not be able to pass without its checker.  MEASURED: built
- * without the sanitizer, this file reports exactly one mismatch, and it is this
- * assertion.
- *
- * IT SILENCES ITS OWN STDERR, and it is the only body here that does, for the
- * same reason param_guard_body_self_test() does: its report is the EXPECTED
- * outcome, and a couple of kilobytes of expected report in the log of a passing
- * run buries the diagnostics that matter.  Every other body keeps its stderr,
- * because there a report is evidence of a real defect and losing it would be
- * losing the diagnosis.  The freopen() result is tested rather than cast --
- * GCC declares it warn_unused_result and a (void) cast does not suppress that
- * -- and a failed redirect is deliberately not acted on, because this body
- * still has to go on to fault.
- */
-static void oracle_body_self_test(struct param_guard_record *record,
-                                  const struct param_guard *guard)
-{
-    unsigned char probe[8];
-    unsigned char *volatile escaped;
-    const volatile unsigned char *below;
-
-    (void)guard;
-
-    if (freopen("/dev/null", "w", stderr) == NULL) {
-        /* Deliberately empty; see the comment above this function. */
-    }
-
-    memset(probe, 0, sizeof probe);
-    escaped = probe;
-    below = escaped - 1;
-
-    record->ivalue = (int)*below;
-    record->rc = 1;
-}
-
-/*
- * O-2 and O-3.  THE DEFECT'S ONLY REACHABLE INPUT, once per instantiation.
- *
- * A real, writable, non-null destination whose declared capacity is ZERO, and a
- * source value of 0 so that every one of its bytes is 0x00.  Both halves are
- * load-bearing.  The capacity is what makes `end` collapse without the clamp;
- * the all-zero source is what lets the strip loop reach the source's edge at
- * all, because rule 1 (num.c:93) breaks on the first byte that differs from the
- * hardcoded 0x00 pad, so any non-zero byte -- including the least significant
- * one -- stops the loop before the final iteration.  That is why 0 and not some
- * other small value.
- *
- * The documented answer is unchanged by the clamp: a source of sizeof(T) bytes
- * cannot be narrowed below one, one is greater than zero, so num.c:98-101
- * refuses it with PROVNUM_E_TOOBIG and return_size 0.  Both are asserted, and
- * so is the destination byte still holding its sentinel -- a zero-capacity call
- * must not touch the destination at all -- and the descriptor invariant.  The
- * instrumentation adds the one claim the contract cannot express: that the
- * refusal was reached without reading a byte outside any object.
- *
- * The destination is placed against the LOW edge of the guarded mapping, so the
- * byte below it is protected as well.  That costs nothing and means an
- * under-write of the destination is caught by the hardware even in a build
- * where the instrumentation is what is being relied on.
- */
-static void oracle_body_set_size_t_zero_capacity(struct param_guard_record *record,
-                                                 const struct param_guard *guard)
-{
-    unsigned char *dest = param_guard_at_low(guard, (size_t)1);
-    OSSL_PARAM param;
-    OSSL_PARAM before;
-
-    if (dest == NULL || !param_fill_sentinel(dest, (size_t)1)
-        || !param_build_empty(&param, OSSL_PARAM_UNSIGNED_INTEGER, dest)) {
-        record->rc = PARAM_GUARD_RC_UNBUILT;
-        return;
-    }
-
-    param_snapshot(&before, &param);
-    record->rc = provnum_set_size_t(&param, (size_t)0);
-    record->return_size = param.return_size;
-    record->param_unchanged = guard_descriptor_survived(&param, &before);
-    record->nbytes = 1;
-    record->bytes[0] = dest[0];
-}
-
-static void oracle_body_set_int_zero_capacity(struct param_guard_record *record,
-                                              const struct param_guard *guard)
-{
-    unsigned char *dest = param_guard_at_low(guard, (size_t)1);
-    OSSL_PARAM param;
-    OSSL_PARAM before;
-
-    if (dest == NULL || !param_fill_sentinel(dest, (size_t)1)
-        || !param_build_empty(&param, OSSL_PARAM_INTEGER, dest)) {
-        record->rc = PARAM_GUARD_RC_UNBUILT;
-        return;
-    }
-
-    param_snapshot(&before, &param);
-    record->rc = provnum_set_int(&param, 0);
-    record->return_size = param.return_size;
-    record->param_unchanged = guard_descriptor_survived(&param, &before);
-    record->nbytes = 1;
-    record->bytes[0] = dest[0];
-}
-
-/*
- * O-4.  THE SAME INPUT WITH A DESTINATION POINTER THAT CANNOT BE DEREFERENCED.
- * guard->high is the first byte of the upper protected page, so the parameter
- * carries a valid non-null pointer that faults on any access.  The library must
- * still answer PROVNUM_E_TOOBIG with return_size 0, which is the strongest form
- * of "a zero-capacity call touches nothing": O-2 proves a byte was not changed,
- * this proves it was not even addressed.  Kept alongside O-2 rather than
- * instead of it, because the two fail for different reasons and a reader
- * deserves to know which.
- */
-static void oracle_body_set_unreadable_zero_capacity(struct param_guard_record *record,
-                                                     const struct param_guard *guard)
-{
-    OSSL_PARAM param;
-    OSSL_PARAM before;
-
-    if (guard->high == NULL
-        || !param_build_empty(&param, OSSL_PARAM_UNSIGNED_INTEGER,
-                              guard->high)) {
-        record->rc = PARAM_GUARD_RC_UNBUILT;
-        return;
-    }
-
-    param_snapshot(&before, &param);
-    record->rc = provnum_set_size_t(&param, (size_t)0);
-    record->return_size = param.return_size;
-    record->param_unchanged = guard_descriptor_survived(&param, &before);
-}
-
-/*
- * O-5.  THE SPECIFICITY CONTROL: the same zero capacity, reached by a NEGATIVE
- * source, which must come back COMPLETELY CLEAN even from a reverted library.
- *
- * The setter half of implement_provnum() hardcodes srcnd.sign to POSITIVE at
- * num.c:162 whatever the value is, so rule 1 compares each source byte against
- * 0x00.  A negative int's bytes are 0xFF, they do not match, and the loop breaks
- * on its FIRST iteration with src.size still at full width -- never approaching
- * the source's edge, and therefore never reaching the defect.  MEASURED against
- * a reverted num.c: this case answers PROVNUM_E_TOOBIG and reports nothing, so
- * it is a genuine control and not a second copy of O-2.
- *
- * That is what an oracle needs to be worth trusting: it must be silent where
- * the defect is out of reach, or its verdict says only that the run happened
- * under a checker.
- */
-static void oracle_body_set_negative_zero_capacity(struct param_guard_record *record,
-                                                   const struct param_guard *guard)
-{
-    unsigned char *dest = param_guard_at_low(guard, (size_t)1);
-    OSSL_PARAM param;
-    OSSL_PARAM before;
-
-    if (dest == NULL || !param_fill_sentinel(dest, (size_t)1)
-        || !param_build_empty(&param, OSSL_PARAM_INTEGER, dest)) {
-        record->rc = PARAM_GUARD_RC_UNBUILT;
-        return;
-    }
-
-    param_snapshot(&before, &param);
-    record->rc = provnum_set_int(&param, -1);
-    record->return_size = param.return_size;
-    record->param_unchanged = guard_descriptor_survived(&param, &before);
-    record->nbytes = 1;
-    record->bytes[0] = dest[0];
-}
-
-/*
- * O-6.  AN ORDINARY SUCCESS, and the second control.
- *
- * A sizeof(int) source into a 3 * sizeof(int) destination -- the same shape
- * test_set_guarded_boundaries() uses for the padding offset at num.c:119, chosen
- * so the repaired offset (src.size) and the reverted one (dest.size - src.size)
- * land in different places.  Under instrumentation this is where a reverted
- * padding offset shows up as a report as well as a byte mismatch, so the group
- * covers both repairs in num.c that have a memory-safety component.  It must
- * complete, return 1, write the value with zero padding above it and leave the
- * descriptor intact: a checker that flagged THIS would be flagging correct code.
- */
-static void oracle_body_set_wide_success(struct param_guard_record *record,
-                                         const struct param_guard *guard)
-{
-    unsigned char *dest = param_guard_at_high(guard, SET_GUARD_WIDE_BYTES);
-    OSSL_PARAM param;
-    OSSL_PARAM before;
-
-    if (dest == NULL || !param_fill_sentinel(dest, SET_GUARD_WIDE_BYTES)) {
-        record->rc = PARAM_GUARD_RC_UNBUILT;
-        return;
-    }
-
-    param_build(&param, OSSL_PARAM_INTEGER, dest, SET_GUARD_WIDE_BYTES);
-    param_snapshot(&before, &param);
-    record->rc = provnum_set_int(&param, 5);
-    record->return_size = param.return_size;
-    record->param_unchanged = guard_descriptor_survived(&param, &before);
-    record->nbytes = SET_GUARD_WIDE_BYTES;
-    memcpy(record->bytes, dest, SET_GUARD_WIDE_BYTES);
-}
-
-/*
- * The shared shape of O-2, O-3 and O-5: a zero-capacity destination that must be
- * refused without being touched.  One helper rather than three copies, and the
- * caller supplies the case name so a failure names the instantiation.
- */
-static int oracle_zero_capacity_refused(const char *casename,
-                                        const struct param_guard_record *record)
-{
-    char label[GUARD_LABEL_MAX];
-    int ret = 1, test;
-
-    TEST_ASSERT_INT_EQ(guard_label(label, sizeof label, casename, "rc"),
-                       record->rc, PROVNUM_E_TOOBIG);
-    ret &= test;
-    TEST_ASSERT_SIZE_EQ(guard_label(label, sizeof label, casename,
-                                    "return_size"),
-                        record->return_size, (size_t)0);
-    ret &= test;
-    TEST_ASSERT_SIZE_EQ(guard_label(label, sizeof label, casename,
-                                    "bytes recorded"),
-                        record->nbytes, (size_t)1);
-    ret &= test;
-    TEST_ASSERT_UINT_EQ(guard_label(label, sizeof label, casename,
-                                    "destination untouched"),
-                        record->bytes[0], PARAM_SENTINEL_BYTE);
-    ret &= test;
-    TEST_ASSERT_INT_EQ(guard_label(label, sizeof label, casename, "descriptor"),
-                       record->param_unchanged, 1);
-    ret &= test;
-
-    return ret;
-}
-
-static int test_set_memory_oracle(void)
-{
-    struct param_guard guard;
-    struct param_guard_record *record;
-    struct param_guard_verdict verdict;
-    unsigned char expected[SET_GUARD_WIDE_BYTES];
-    int ret = 1, test;
-
-    /*
-     * Expressibility first, matching this file's other gates: O-6 hands the
-     * whole destination back through the record's fixed byte array, and a
-     * comparison of a truncated destination would be a weaker claim wearing the
-     * same name.
-     */
-    TEST_ASSERT_INT_EQ("oracle setup: wide destination fits the record",
-                       SET_GUARD_WIDE_BYTES <= (size_t)PARAM_GUARD_BYTES, 1);
-    ret &= test;
-
-    /*
-     * The mapping and the shared record are ASSERTED rather than probed: a
-     * registered target must not become a vacuous pass because mmap() refused.
-     * Both are released on every return below, including the early ones.
-     */
-    TEST_ASSERT_INT_EQ("oracle setup: mapping established",
-                       param_guard_open(&guard), 1);
-    ret &= test;
-    if (guard.low == NULL)
-        return 0;
-
-    record = param_guard_record_open();
-    TEST_ASSERT_PTR_NOT_NULL("oracle setup: shared record", record);
-    ret &= test;
-    if (record == NULL) {
-        param_guard_close(&guard);
-        return 0;
-    }
-
-    /*
-     * O-1 FIRST, for the reason given above the bodies: every verdict below is
-     * "the instrumentation saw nothing", which is worth exactly nothing unless
-     * the instrumentation demonstrably sees something.  Asserted as
-     * completed == 0 and nothing more -- whether the checker ended the child by
-     * signal or by exit status is no part of the claim, which is why the
-     * harness's predicate is spelled the way it is.
-     */
-    verdict = param_guard_run(oracle_body_self_test, record, &guard);
-    TEST_ASSERT_INT_EQ("oracle selftest: harness", verdict.error, 0);
-    ret &= test;
-    TEST_ASSERT_INT_EQ("oracle selftest: instrumentation armed",
-                       verdict.completed, 0);
-    ret &= test;
-
-    /*
-     * O-2.  guard_verdict_completed() carries the memory claim: `completed` is
-     * 0 if the child was killed OR if the instrumentation reported, so this one
-     * assertion is what a reverted num.c:91 fails, by name, on any host.
-     */
-    {
-        verdict = param_guard_run(oracle_body_set_size_t_zero_capacity, record,
-                                  &guard);
-        ret &= guard_verdict_completed("oracle set_size_t zero capacity",
-                                       &verdict);
-        ret &= oracle_zero_capacity_refused("oracle set_size_t zero capacity",
-                                            record);
-    }
-
-    /* O-3.  The int instantiation of the same input, same claims. */
-    {
-        verdict = param_guard_run(oracle_body_set_int_zero_capacity, record,
-                                  &guard);
-        ret &= guard_verdict_completed("oracle set_int zero capacity", &verdict);
-        ret &= oracle_zero_capacity_refused("oracle set_int zero capacity",
-                                            record);
-    }
-
-    /*
-     * O-4.  The destination pointer aims at the protected page, so there is no
-     * byte to compare and the untouched claim is carried by the child surviving
-     * at all; the contract assertions are made directly rather than through the
-     * shared helper.
-     */
-    {
-        verdict = param_guard_run(oracle_body_set_unreadable_zero_capacity,
-                                  record, &guard);
-        ret &= guard_verdict_completed("oracle unreadable zero capacity",
-                                       &verdict);
-        TEST_ASSERT_INT_EQ("oracle unreadable zero capacity: rc", record->rc,
-                           PROVNUM_E_TOOBIG);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("oracle unreadable zero capacity: return_size",
-                            record->return_size, (size_t)0);
-        ret &= test;
-        TEST_ASSERT_INT_EQ("oracle unreadable zero capacity: descriptor",
-                           record->param_unchanged, 1);
-        ret &= test;
-    }
-
-    /* O-5.  The specificity control; identical claims, different route. */
-    {
-        verdict = param_guard_run(oracle_body_set_negative_zero_capacity, record,
-                                  &guard);
-        ret &= guard_verdict_completed("oracle set_int(-1) zero capacity",
-                                       &verdict);
-        ret &= oracle_zero_capacity_refused("oracle set_int(-1) zero capacity",
-                                            record);
-    }
-
-    /*
-     * O-6.  Zero padding and not sign fill even though 5 is positive anyway --
-     * num.c:162 hardcodes the setter's source sign to POSITIVE, which is 0x00 --
-     * laid out for the host's byte order so the claim holds on either.
-     */
-    TEST_ASSERT_INT_EQ("oracle wide: expectation",
-                       param_expect_zero_padded(expected, sizeof expected,
-                                                (uintmax_t)5, sizeof(int)), 1);
-    ret &= test;
-
-    {
-        verdict = param_guard_run(oracle_body_set_wide_success, record, &guard);
-        ret &= guard_verdict_completed("oracle wide success", &verdict);
-        TEST_ASSERT_INT_EQ("oracle wide success: rc", record->rc, 1);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("oracle wide success: return_size",
-                            record->return_size, SET_GUARD_WIDE_BYTES);
-        ret &= test;
-        TEST_ASSERT_SIZE_EQ("oracle wide success: bytes recorded",
-                            record->nbytes, sizeof expected);
-        ret &= test;
-        TEST_ASSERT_MEM_EQ("oracle wide success: destination bytes",
-                           record->bytes, expected, sizeof expected);
-        ret &= test;
-        TEST_ASSERT_INT_EQ("oracle wide success: descriptor",
-                           record->param_unchanged, 1);
-        ret &= test;
-    }
-
-    param_guard_record_close(record);
-    param_guard_close(&guard);
-
-    return ret;
-}
-#endif                          /* LIBPROV_TEST_MEMORY_ORACLE */

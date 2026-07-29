@@ -58,42 +58,67 @@
  *     -- so only that one capture shares a line with its raise, and every such
  *     line is marked so it is not reflowed by a later edit.
  *
- * 3.  POINTER IDENTITY IS ASSERTED ONLY FOR STRINGS THIS FILE OWNS.  C99
- *     6.4.5p6 leaves it unspecified whether string literals with the same
- *     contents are distinct objects, and it leaves that unspecified PER
- *     OCCURRENCE: an implementation may fold one pair of occurrences and keep
- *     another pair apart in the same translation unit.  So no run-time probe
- *     can license the claim either -- observing that two expansions of
- *     OPENSSL_FILE happen to compare equal says nothing about the different
- *     pair formed by the expansion this file captured and the expansion
- *     include/prov/err.h:51 forwarded.  Basing an assertion on that inference
- *     would make it unsound rather than conditional, and it could fail on a
- *     conforming implementation that folded the probe's pair and not the
- *     other.  For the values the compiler and <openssl/macros.h> generate --
- *     OPENSSL_FILE and OPENSSL_FUNC as they arrive through ERR_raise() and
- *     ERR_raise_data() -- this file therefore asserts CONTENT and the CALL
- *     SITE LINE, plus the one pointer property that IS a contract rather than
- *     an accident of storage: neither macro can expand to a null pointer, so
- *     a forwarded null is a defect, and it is the one thing content alone
- *     cannot see (mock_core.h records a null string as "", which is exactly
- *     what OPENSSL_FILE expands to under OPENSSL_NO_FILENAMES).  This is the
- *     same policy mock_core.h:150-155 states for its own recorder.
+ * 3.  EVERY POINTER CLAIM CARRIES ITS OWN SOUNDNESS ARGUMENT.  Three separate
+ *     arguments are available, and each pointer assertion below rests on the
+ *     strongest one that actually applies to it.
  *
- *     Identity of a forwarded string IS asserted, unconditionally and
- *     soundly, everywhere the pointer belongs to this file and is therefore a
- *     single known object: the file and function markers in
- *     test_set_error_debug_forwarding(), the format string in
- *     test_set_error_forwarding() and both macro cases, and the variadic
- *     string in test_va_list_traversal().  That is where a library forwarding
- *     a copy instead of the caller's pointer is caught, and it is caught for
- *     the SAME err.c function the macros reach: err.c:90-94 has one
- *     implementation, so pinning its pass-through once pins it everywhere.
- *     Measured against a mutant that forwards a malloc()ed copy of both
- *     strings: sixteen assertions in test_set_error_debug_forwarding() fail
- *     and the run exits non-zero, so asserting content rather than identity
- *     for the generated values costs no detection power at all.  Nothing here
- *     compares a pointer against a bare literal in any case: every
- *     expectation is captured into a variable first.
+ *     (a) THIS FILE OWNS THE STRING, so the pointer is a single known object
+ *         and identity is asserted unconditionally: the file and function
+ *         markers in test_set_error_debug_forwarding(), the format string in
+ *         test_set_error_forwarding() and in both macro cases, and the
+ *         variadic string in test_va_list_traversal().  That is where a
+ *         library forwarding a copy instead of the caller's pointer is
+ *         caught, and it is caught for the SAME err.c function the macros
+ *         reach: err.c:90-94 has one implementation, so pinning its
+ *         pass-through once pins it everywhere.  Measured against a mutant
+ *         that forwards a malloc()ed copy of both strings: sixteen assertions
+ *         in test_set_error_debug_forwarding() fail and the run exits
+ *         non-zero.
+ *
+ *     (b) THE LANGUAGE GUARANTEES ONE OBJECT PER FUNCTION.
+ *         <openssl/macros.h>:321-323 defines OPENSSL_FUNC as __func__ whenever
+ *         __STDC_VERSION__ >= 199901L, and C99 6.4.2.2p1 makes __func__ a
+ *         single static const char array declared once per function -- not a
+ *         string literal, so 6.4.5p6 does not reach it.  Every occurrence
+ *         inside one function designates that one object, which makes the
+ *         captured expectation and the expansion inside the macro the SAME
+ *         address unless err.c copies the string.  Both macro cases assert
+ *         that identity behind exactly that #if, so on a host taking
+ *         macros.h's __FUNCTION__ or "(unknown function)" branch the claim is
+ *         not made rather than made unsoundly.  This project compiles at
+ *         CMAKE_C_STANDARD 99, so the guarded form is live here.
+ *
+ *     (c) ONE OCCURRENCE IS ONE OBJECT, whatever the implementation does with
+ *         distinct literals.  This is what covers OPENSSL_FILE, for which no
+ *         cross-occurrence claim is available: OPENSSL_FILE is __FILE__
+ *         (macros.h:302), two occurrences of __FILE__ are two string
+ *         literals, and C99 6.4.5p6 leaves it unspecified PER OCCURRENCE
+ *         whether such literals are distinct objects -- an implementation may
+ *         fold one pair and keep another pair apart in the same translation
+ *         unit.  No run-time probe can license the cross-occurrence claim
+ *         either: observing that this file's capture and some other expansion
+ *         compare equal says nothing about the different pair formed by that
+ *         capture and the expansion include/prov/err.h:51 forwarded.
+ *         (Measured equal on this toolchain at -O0 and -O2 under both
+ *         -std=c99 and -std=gnu99; a measurement is not a guarantee, so it
+ *         stays a note and never an assertion.)  What IS guaranteed is that
+ *         ONE occurrence of __FILE__ is ONE literal and therefore one array
+ *         with one address, so both macro cases evaluate a SINGLE raise
+ *         occurrence twice in a loop and require the two forwarded file
+ *         pointers -- and function pointers -- to agree.  A copying
+ *         implementation fails that: err.c frees nothing between raises, so
+ *         two copies land at two addresses.  It needs no #if and it holds on
+ *         every conforming implementation.
+ *
+ *     Content and the call-site line are asserted for the generated values on
+ *     top of all of the above, together with the one pointer property that is
+ *     a plain contract: neither OPENSSL_FILE nor OPENSSL_FUNC can expand to a
+ *     null pointer, so a forwarded null is a defect, and it is the one thing
+ *     content alone cannot see (mock_core.h:150-155 records a null string as
+ *     "", which is exactly what OPENSSL_FILE expands to under
+ *     OPENSSL_NO_FILENAMES).  Nothing here compares a pointer against a bare
+ *     literal in any case: every expectation is captured into a variable
+ *     first.
  *
  * THE HANDLE IS OPAQUE.  struct proverr_functions_st is defined only in
  * err.c:7-12 and include/prov/err.h:58 merely forward-declares it, so nothing
@@ -838,9 +863,10 @@ static int test_err_raise_macro(void)
    * OPENSSL_LINE capture does.  They are const to make it plain that this one
    * capture serves every case below, and they are captured into variables
    * rather than used inline so that no assertion ever compares against a bare
-   * literal.  What they are compared BY is content, not address; hazard 3 at
-   * the head of this file says why an address comparison is not available for
-   * a value this file does not own.
+   * literal.  expected_func additionally serves as an ADDRESS expectation
+   * under hazard 3(b), because __func__ is one object per function; the file
+   * capture is content-only, and hazard 3(c) supplies the address claim it
+   * cannot make.
    */
   const char *const expected_file = OPENSSL_FILE;
   const char *const expected_func = OPENSSL_FUNC;
@@ -941,22 +967,78 @@ static int test_err_raise_macro(void)
   TEST_ASSERT_STR_EQ("ERR_raise: captured function is the enclosing one",
                      mock_core_obs.func_text, expected_func);
   ok &= test;
-  /* The one pointer claim that is a contract rather than an accident of
-     literal storage: <openssl/macros.h> defines OPENSSL_FILE as either
-     __FILE__ or "" and OPENSSL_FUNC as either a function-name macro or
-     "(unknown function)", so both always expand to a string and never to a
-     null pointer.  Content cannot see a forwarded null on its own --
-     mock_core.h records one as "", which is precisely what OPENSSL_FILE
-     expands to under OPENSSL_NO_FILENAMES -- so the two checks together are
-     what content plus a null forwarding cannot both satisfy.  Identity is not
-     asserted here; hazard 3 at the head of this file says why, and names
-     where it is asserted instead. */
+  /* Hazard 3, first pointer claim: the plain contract.  <openssl/macros.h>
+     defines OPENSSL_FILE as either __FILE__ or "" (macros.h:297-305) and
+     OPENSSL_FUNC as either a function-name macro or "(unknown function)"
+     (macros.h:321-336), so both always expand to a string and never to a null
+     pointer.  Content cannot see a forwarded null on its own --
+     mock_core.h:150-155 records one as "", which is precisely what
+     OPENSSL_FILE expands to under OPENSSL_NO_FILENAMES -- so the two checks
+     together are what content plus a null forwarding cannot both satisfy. */
   TEST_ASSERT_PTR_NOT_NULL("ERR_raise: captured file is not null",
                            mock_core_obs.file_ptr);
   ok &= test;
   TEST_ASSERT_PTR_NOT_NULL("ERR_raise: captured function is not null",
                            mock_core_obs.func_ptr);
   ok &= test;
+
+  /* Hazard 3(b): the function name arrives by IDENTITY, and under C99 that is
+     a language guarantee rather than an artefact of literal storage.
+     OPENSSL_FUNC is __func__ whenever __STDC_VERSION__ >= 199901L
+     (macros.h:321-323), and C99 6.4.2.2p1 makes __func__ a single static const
+     char array declared once per function -- not a string literal, so the
+     unspecified literal-distinctness of 6.4.5p6 does not reach it.  The
+     capture above and the expansion inside include/prov/err.h:51 are therefore
+     the same object unless err.c copies the string.  The #if admits only the
+     branch whose expansion is standardised, so where macros.h takes its
+     __FUNCTION__ or "(unknown function)" branch the claim is not made rather
+     than made unsoundly.  This target is built at CMAKE_C_STANDARD 99, so the
+     guarded assertion is live here and was observed to run. */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+  TEST_ASSERT_PTR_EQ("ERR_raise: captured function pointer identity",
+                     mock_core_obs.func_ptr, expected_func);
+  ok &= test;
+#endif
+
+  /* Hazard 3(c): the file string is not copied either, proved without relying
+     on literal storage at all.  A cross-occurrence claim -- this function's
+     OPENSSL_FILE capture against the expansion inside the macro -- is NOT
+     available, because two occurrences of __FILE__ are two string literals and
+     C99 6.4.5p6 leaves their distinctness unspecified per occurrence.  What IS
+     guaranteed is that ONE occurrence is ONE literal, hence one array with one
+     address, however the implementation stores it.  So the loop below drives a
+     SINGLE ERR_raise() occurrence twice and requires the two forwarded
+     addresses to agree.  A copying implementation fails it: err.c frees
+     nothing between raises, so two copies land at two addresses.  Reason 46u
+     is used here and nowhere else, so a failure names this block
+     unambiguously in the log. */
+  {
+    const char *seen_file[2];
+    const char *seen_func[2];
+    int repeat;
+
+    for (repeat = 0; repeat < 2; repeat++) {
+      mock_core_reset();
+      ERR_raise(handle, 46u);      /* ONE occurrence, evaluated twice */
+      seen_file[repeat] = mock_core_obs.file_ptr;
+      seen_func[repeat] = mock_core_obs.func_ptr;
+    }
+
+    /* Both halves must have been observed at all, or the identity below would
+       hold vacuously on two nulls. */
+    TEST_ASSERT_PTR_NOT_NULL("ERR_raise: repeat 1 forwarded a file",
+                             seen_file[0]);
+    ok &= test;
+    TEST_ASSERT_PTR_NOT_NULL("ERR_raise: repeat 2 forwarded a file",
+                             seen_file[1]);
+    ok &= test;
+    TEST_ASSERT_PTR_EQ("ERR_raise: one call site forwards one file object",
+                       seen_file[1], seen_file[0]);
+    ok &= test;
+    TEST_ASSERT_PTR_EQ("ERR_raise: one call site forwards one function object",
+                       seen_func[1], seen_func[0]);
+    ok &= test;
+  }
 
   mock_core_reset();
 
@@ -1157,15 +1239,63 @@ static int test_err_raise_data_macro(void)
   TEST_ASSERT_STR_EQ("ERR_raise_data: captured function is the enclosing one",
                      mock_core_obs.func_text, expected_func);
   ok &= test;
-  /* Neither macro can expand to a null pointer -- see the same pair in
-     test_err_raise_macro() for why this is the one pointer property content
-     cannot cover on its own. */
+  /* Hazard 3, first pointer claim: neither macro can expand to a null pointer
+     -- see the same pair in test_err_raise_macro() for why this is the one
+     pointer property content cannot cover on its own. */
   TEST_ASSERT_PTR_NOT_NULL("ERR_raise_data: captured file is not null",
                            mock_core_obs.file_ptr);
   ok &= test;
   TEST_ASSERT_PTR_NOT_NULL("ERR_raise_data: captured function is not null",
                            mock_core_obs.func_ptr);
   ok &= test;
+
+  /* Hazard 3(b), asserted here as well as in test_err_raise_macro(): the two
+     macros expand to two different call chains -- include/prov/err.h:47 sends
+     ERR_raise() through ERR_raise_data(), but this case enters the general
+     macro directly -- so the identity is pinned on both entry points rather
+     than inferred from one.  The guard and its basis (macros.h:321-323 plus
+     C99 6.4.2.2p1) are spelled out at the corresponding assertion in
+     test_err_raise_macro(). */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+  TEST_ASSERT_PTR_EQ("ERR_raise_data: captured function pointer identity",
+                     mock_core_obs.func_ptr, expected_func);
+  ok &= test;
+#endif
+
+  /* Hazard 3(c), the unconditional backstop, repeated for this macro for the
+     same reason: one ERR_raise_data() occurrence driven twice must forward one
+     file object and one function object.  Reason 48u is used here and nowhere
+     else.  The format string is passed with no variadic argument behind it,
+     which is the minimum legal __VA_ARGS__ documented below, and va_mode is
+     MOCK_CORE_VA_NONE after every mock_core_reset() (mock_core.h), so the stub
+     does not walk a va_list that holds nothing. */
+  {
+    const char *seen_file[2];
+    const char *seen_func[2];
+    int repeat;
+
+    for (repeat = 0; repeat < 2; repeat++) {
+      mock_core_reset();
+      ERR_raise_data(handle, 48u, fmt);   /* ONE occurrence, evaluated twice */
+      seen_file[repeat] = mock_core_obs.file_ptr;
+      seen_func[repeat] = mock_core_obs.func_ptr;
+    }
+
+    /* Both halves must have been observed, or the identity would hold
+       vacuously on two nulls. */
+    TEST_ASSERT_PTR_NOT_NULL("ERR_raise_data: repeat 1 forwarded a file",
+                             seen_file[0]);
+    ok &= test;
+    TEST_ASSERT_PTR_NOT_NULL("ERR_raise_data: repeat 2 forwarded a file",
+                             seen_file[1]);
+    ok &= test;
+    TEST_ASSERT_PTR_EQ("ERR_raise_data: one call site forwards one file object",
+                       seen_file[1], seen_file[0]);
+    ok &= test;
+    TEST_ASSERT_PTR_EQ("ERR_raise_data: one call site forwards one function"
+                       " object", seen_func[1], seen_func[0]);
+    ok &= test;
+  }
 
   /*
    * --- the minimum legal __VA_ARGS__: the format string and nothing else ---
