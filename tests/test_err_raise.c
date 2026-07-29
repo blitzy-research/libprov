@@ -5,17 +5,9 @@
  * ERR_raise() / ERR_raise_data() macro contract from include/prov/err.h, and
  * the negative compile-time contract that ERR_put_error() stays undefined.
  *
- * NO USER-SPECIFIED RULES EXIST for this project -- the rules facility
- * reports none -- so this file is held to enterprise-standard best practice
- * and to the constraints the request itself carries: assert a SPECIFIC value
- * in every case rather than merely that a call returned, derive the exit
- * status from testutil.h's counters, mock the OpenSSL core instead of linking
- * libcrypto, and reset the observation state at the START of every case so
- * the cases are order-independent and the executable is parallel-safe.
- *
  * WHAT IS BEING ENCODED.  err.c stores the core handle and the three resolved
- * callbacks (err.c:7-12, err.c:56-61), and the three primitives do nothing
- * but forward:
+ * callbacks (err.c:7-12, err.c:56-61), and the three primitives do nothing but
+ * forward:
  *
  *     proverr_new_error()       -> core                       (err.c:85-88)
  *     proverr_set_error_debug() -> core, file, line, func     (err.c:90-94)
@@ -27,10 +19,10 @@
  * forwarded a strdup()ed copy, which is a real regression -- the caller's
  * string would then be leaked and its lifetime silently changed.
  *
- * include/prov/err.h:49-52 defines ERR_raise_data() as a comma expression,
- * and that evaluation ORDER is the contract: new_error, then set_error_debug,
- * then set_error.  mock_core.h's recorder makes the order observable, so it
- * is asserted as a sequence of ordinals rather than inferred from three call
+ * include/prov/err.h:49-52 defines ERR_raise_data() as a comma expression, and
+ * that evaluation ORDER is the contract: new_error, then set_error_debug, then
+ * set_error.  mock_core.h's recorder makes the order observable, so it is
+ * asserted as a sequence of ordinals rather than inferred from three call
  * counts -- three counts of one cannot distinguish an order.
  * include/prov/err.h:47 defines ERR_raise(h, r) as ERR_raise_data((h),(r),
  * NULL), which is why fmt arrives as NULL from one macro and as the caller's
@@ -44,31 +36,25 @@
  *     OPENSSL_LINE as 0 when OPENSSL_NO_FILENAMES is set, and OPENSSL_FUNC as
  *     "(unknown function)" on a translator that offers neither __func__ nor
  *     __FUNCTION__.  Expectations written in the OpenSSL spellings stay
- *     correct in those builds; hard-coded ones would be a latent failure.
- *     All three arrive transitively through "prov/err.h"
- *     (include/prov/err.h:4-5), so no extra include is needed.
+ *     correct in those builds; hard-coded ones would be a latent failure.  All
+ *     three arrive transitively through "prov/err.h" (include/prov/err.h:4-5).
  *
  * 2.  OPENSSL_LINE expands AT THE CALL SITE, so its expectation must be
  *     captured on the SAME PHYSICAL LINE as the raise.  One line lower and it
  *     is off by one.  Only the line is position-sensitive -- the file string
- *     names the translation unit and OPENSSL_FUNC names the enclosing
- *     function -- so only that one capture shares a line with its raise, and
- *     every such line is marked so it is not reflowed by a later edit.
+ *     names the translation unit and OPENSSL_FUNC names the enclosing function
+ *     -- so only that one capture shares a line with its raise, and every such
+ *     line is marked so it is not reflowed by a later edit.
  *
  * 3.  Pointer identity of a macro-supplied STRING is only checkable when the
- *     two expansions denote the same object.  C99 6.4.2.2p1 gives __func__
- *     one object per function, so OPENSSL_FUNC is safe there, but C99
- *     6.4.5p6 leaves it unspecified whether equal string literals share an
- *     address.  That is precisely what GCC's -Waddress warns about, and
- *     -Waddress is part of -Wall, so nothing here compares a pointer against
- *     a bare literal: every expectation is captured into a variable first.
- *     Each macro case then PROBES whether two expansions in this translation
- *     unit are the same object and asserts identity only when they are, while
- *     asserting CONTENT unconditionally.  Both probes hold on every mainstream
- *     toolchain -- measured here at -O0, at -O2 and under
- *     -fno-merge-constants -- so the identity assertions are live rather than
- *     quietly skipped, and a strdup()ing regression is caught.  The
- *     unconditional half of that guarantee lives in
+ *     two expansions denote the same object.  C99 6.4.2.2p1 gives __func__ one
+ *     object per function, so OPENSSL_FUNC is safe there, but C99 6.4.5p6
+ *     leaves it unspecified whether equal string literals share an address.
+ *     Nothing here therefore compares a pointer against a bare literal: every
+ *     expectation is captured into a variable first.  Each macro case then
+ *     PROBES whether two expansions in this translation unit are the same
+ *     object and asserts identity only when they are, while asserting CONTENT
+ *     unconditionally.  The unconditional half of that guarantee lives in
  *     test_set_error_debug_forwarding(), which passes pointers this file owns
  *     and so needs no probe at all.
  *
@@ -77,38 +63,29 @@
  * here can read handle->core.  Every claim about what a handle stored is made
  * behaviourally, from what the stubs were handed.
  *
- * NO ABORTING INPUT IS USED.  This target links libprov under the project's
- * default flags, so err.c:26-27 and err.c:47-49 are live assert()s: a null
- * core, a null dispatch table, or any table that leaves a callback
- * unresolved, aborts the process.  Every handle here is therefore built from
- * mock_dispatch_complete over a real core handle.  The abort contract belongs
- * to tests/test_err_death.c and the NDEBUG contract to
+ * NO ABORTING INPUT MAY BE USED HERE.  This target must link libprov under the
+ * project's default flags, which leaves err.c:26-27 and err.c:47-49 as live
+ * assert()s: a null core, a null dispatch table, or any table that leaves a
+ * callback unresolved, aborts the process.  Every handle here is therefore
+ * built from mock_dispatch_complete over a real core handle.  The abort
+ * contract belongs to tests/test_err_death.c and the NDEBUG contract to
  * tests/test_err_guards.c.
  *
  * ERR_raise() and ERR_raise_data() name `handle` three times
  * (include/prov/err.h:50-52), so an argument with side effects would be
  * evaluated three times.  Every invocation below passes a plain variable.
+ *
+ * NO LIBCRYPTO: the core is mock_core.h's hand-built one and
+ * <openssl/params.h> is never included.
  */
 
 #include "testutil.h"
 #include "mock_core.h"
-/*
- * Included explicitly, and not merely relied on through mock_core.h:31,
- * because it is the header under test and this file asserts properties of it
- * directly, two of them at compile time just below.  It carries no include
- * guard -- it does not need one, being idempotent by construction -- so this
- * second inclusion redeclares its six prototypes.  That is harmless and
- * legal, but it does mean -Wredundant-decls, which is in neither -Wall nor
- * -Wextra nor this project's build flags, reports six redeclarations against
- * include/prov/err.h itself.  Noted so that nobody who switches that warning
- * on mistakes a property of the public header for a defect here; the header is
- * not this suite's to change.
- */
 #include "prov/err.h"
-#include <limits.h>             /* INT_MIN, INT_MAX */
-#include <stdint.h>             /* UINT32_MAX       */
-#include <stddef.h>             /* NULL, size_t     */
-#include <string.h>             /* strlen           */
+#include <limits.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
 
 /*
  * The negative compile-time contract.  include/prov/err.h:43 undefines
@@ -207,7 +184,6 @@ static int test_new_error_forwarding(void)
                      mock_core_obs.seq[0], MOCK_CORE_ORD_NEW_ERROR);
   ok &= test;
 
-  /* Not idempotent: a second call is a second error, not a no-op. */
   proverr_new_error(handle);
 
   TEST_ASSERT_UINT_EQ("new_error: calls after two calls",
@@ -238,7 +214,27 @@ static int test_new_error_forwarding(void)
   TEST_ASSERT_PTR_NOT_NULL("new_error: handle over the alternate core",
                            other);
   ok &= test;
-  if (other != NULL) {
+
+  /*
+   * `handle` is still live here, so the second handle has to be a DISTINCT
+   * object -- err.c:56 allocates fresh storage per call -- and that is
+   * asserted before it is relied on, for two reasons.  It is what this case
+   * rests on: if one cached object were handed out twice, "the forwarded core
+   * changes with the handle" would be testing nothing.  And it is what makes
+   * the cleanup safe: the block below and the tail of this function would
+   * otherwise free the same object twice (CWE-415), replacing a clean failure
+   * line with heap corruption or an abort that hides it.
+   */
+  TEST_ASSERT_PTR_NE("new_error: the alternate handle is a distinct object",
+                     other, handle);
+  ok &= test;
+
+  /*
+   * Gated on distinctness, not merely on non-NULL.  When the two pointers are
+   * aliased this block is skipped and the single object is released exactly
+   * once by the `proverr_free_handle(handle)` at the tail.
+   */
+  if (other != NULL && other != handle) {
     proverr_new_error(other);
 
     TEST_ASSERT_UINT_EQ("new_error: alternate handle calls",
@@ -262,20 +258,18 @@ static int test_new_error_forwarding(void)
  * proverr_set_error_debug() forwards core, file, line and func unchanged
  * (err.c:93).
  *
- * This is the case that pins pointer pass-through with no caveat attached.
- * Both strings are objects THIS FUNCTION owns, so "the same pointer arrived"
- * is a claim C guarantees is meaningful -- unlike a comparison against a
- * string literal, whose address C99 6.4.5p6 leaves unspecified.  A library
- * that forwarded a copy would keep every content assertion passing and fail
- * here, which is the whole reason identity is asserted at all.
+ * This is the case that pins pointer pass-through with no caveat attached:
+ * both strings are objects THIS FUNCTION owns, so "the same pointer arrived"
+ * is a claim C guarantees is meaningful, unlike a comparison against a string
+ * literal, whose address C99 6.4.5p6 leaves unspecified.  A library that
+ * forwarded a copy would keep every content assertion passing and fail here.
  *
- * The line values are driven from a table rather than written out five times,
- * so the two extremes, the sign transition and an ordinary value are all
- * covered and the expectations are the <limits.h> macros themselves rather
- * than transcribed digits -- INT_MIN and INT_MAX are not the same numbers on
- * every ABI.  MIDRANGE_LINE is unrelated to any line in this file, so a
- * mutation substituting the callee's own __LINE__ for the caller's would fail
- * rather than coincide.
+ * The line values are driven from a table so that the two extremes, the sign
+ * transition and an ordinary value are all covered, and the expectations are
+ * the <limits.h> macros themselves rather than transcribed digits -- INT_MIN
+ * and INT_MAX are not the same numbers on every ABI.  MIDRANGE_LINE is
+ * unrelated to any line in this file, so forwarding the callee's own line
+ * number instead of the caller's would fail rather than coincide.
  */
 static int test_set_error_debug_forwarding(void)
 {
@@ -288,10 +282,6 @@ static int test_set_error_debug_forwarding(void)
   static const char file_marker[] = "tests/test_err_raise.c[file-marker]";
   static const char func_marker[] = "test_err_raise_func_marker";
 
-  /*
-   * One row per line value.  A single array of pairs rather than two parallel
-   * arrays, because parallel arrays can fall out of step and this cannot.
-   */
   static const struct {
     int line;
     const char *label;
@@ -333,13 +323,11 @@ static int test_set_error_debug_forwarding(void)
   ok &= test;
 
   for (index = 0; index < line_case_count; index++) {
-    /* Per-case reset, so one row cannot inherit another's observations. */
     mock_core_reset();
 
     proverr_set_error_debug(handle, file_marker, line_cases[index].line,
                             func_marker);
 
-    /* The value under test: forwarded verbatim, both extremes included. */
     TEST_ASSERT_INT_EQ(line_cases[index].label, mock_core_obs.line,
                        line_cases[index].line);
     ok &= test;
@@ -372,7 +360,6 @@ static int test_set_error_debug_forwarding(void)
                        mock_core_obs.file_ptr, func_marker);
     ok &= test;
 
-    /* err.c:90-94 touches only core_set_error_debug. */
     TEST_ASSERT_UINT_EQ("set_error_debug: new_error not invoked",
                         mock_core_obs.new_error_calls, 0UL);
     ok &= test;
@@ -451,12 +438,11 @@ static int test_set_error_forwarding(void)
   /*
    * The two rows above UINT32_MAX / 2 are not decoration.  The realistic bug
    * here is a reason that gets treated as signed somewhere on its way through,
-   * which clears the top bit; measured against this table, that corruption is
-   * invisible to every row up to and including UINT32_MAX / 2 and shows up
-   * ONLY at UINT32_MAX - 1 and UINT32_MAX.  A round trip through an int of the
-   * same width, by contrast, cannot be caught by anything: it is value
-   * preserving for all 2^32 inputs wherever int is 32 bits, so it is an
-   * equivalent mutation rather than an untested behaviour.
+   * which clears the top bit: that corruption is invisible to every row up to
+   * and including UINT32_MAX / 2 and observable only at UINT32_MAX - 1 and
+   * UINT32_MAX.  A round trip through an int of the same width, by contrast,
+   * is value preserving for all 2^32 inputs wherever int is 32 bits, so no
+   * input can distinguish it.
    */
   static const struct {
     uint32_t reason;
@@ -509,12 +495,10 @@ static int test_set_error_forwarding(void)
                        fmt);
     ok &= test;
 
-    /* The default consumption mode must leave the list untraversed. */
     TEST_ASSERT_INT_EQ("set_error: va_list not traversed",
                        mock_core_obs.va_consumed, 0);
     ok &= test;
 
-    /* err.c:96-104 touches only core_vset_error. */
     TEST_ASSERT_UINT_EQ("set_error: new_error not invoked",
                         mock_core_obs.new_error_calls, 0UL);
     ok &= test;
@@ -561,7 +545,6 @@ static int test_set_error_forwarding(void)
   proverr_free_handle(handle);
   return ok;
 }
-
 
 /*
  * The va_list survives the trip: err.c:101-103 wraps the callee's invocation
@@ -612,7 +595,6 @@ static int test_va_list_traversal(void)
   if (handle == NULL)
     return 0;
 
-  /* --- an ordinary int and a short string --- */
   mock_core_reset();
   mock_core_obs.va_mode = MOCK_CORE_VA_INT_THEN_STR;
   proverr_set_error(handle, 7u, fmt, 99, detail_first);
@@ -631,7 +613,6 @@ static int test_va_list_traversal(void)
                      mock_core_obs.va_str_text, detail_first);
   ok &= test;
 
-  /* The named arguments are unaffected by the traversal. */
   TEST_ASSERT_UINT_EQ("va_list: reason alongside varargs",
                       mock_core_obs.reason, 7u);
   ok &= test;
@@ -659,7 +640,6 @@ static int test_va_list_traversal(void)
                      mock_core_obs.va_mode, MOCK_CORE_VA_NONE);
   ok &= test;
 
-  /* --- the extreme int and a longer string: not a hard-coded 99 --- */
   mock_core_reset();
   mock_core_obs.va_mode = MOCK_CORE_VA_INT_THEN_STR;
   proverr_set_error(handle, 0u, fmt, INT_MIN, detail_second);
@@ -684,7 +664,6 @@ static int test_va_list_traversal(void)
                       mock_core_obs.reason, 0u);
   ok &= test;
 
-  /* --- INT_MAX, closing the pair --- */
   mock_core_reset();
   mock_core_obs.va_mode = MOCK_CORE_VA_INT_THEN_STR;
   proverr_set_error(handle, UINT32_MAX, fmt, INT_MAX, detail_first);
@@ -700,7 +679,6 @@ static int test_va_list_traversal(void)
                      mock_core_obs.va_str_ptr, detail_first);
   ok &= test;
 
-  /* --- the mode really is opt-in: no mode, no traversal --- */
   mock_core_reset();
   proverr_set_error(handle, 7u, fmt, 99, detail_first);
 
@@ -744,29 +722,20 @@ static int test_va_list_traversal(void)
 static int test_err_raise_macro(void)
 {
   /*
-   * The same-object probes.  Two expansions of one macro, both in this
+   * The same-object probes: two expansions of one macro, both in this
    * function.  For OPENSSL_FUNC == __func__ C99 6.4.2.2p1 guarantees a single
    * object per function, so the probe is a formality that also covers the
    * "(unknown function)" fallback; for OPENSSL_FILE == __FILE__ the two are
-   * string literals whose sharing C99 6.4.5p6 leaves unspecified, so the
-   * probe MEASURES it rather than assuming it.  Comparing the captured
-   * variables, never the macros directly, is also what keeps GCC's -Waddress
-   * quiet -- see hazard 3 at the head of this file.
-   *
-   * cppcheck calls each comparison below always-true, having read "assigned
-   * the same macro" as "same value".  That conflates a literal's CONTENTS with
-   * its ADDRESS, which is the very thing C99 6.4.5p6 leaves unspecified, so
-   * the finding is suppressed rather than obeyed: the comparison holding is
-   * this toolchain's measured behaviour, not a tautology, and collapsing it to
-   * a constant would quietly delete the soundness guard.
+   * string literals whose sharing C99 6.4.5p6 leaves unspecified, so the probe
+   * decides at run time whether pointer identity is a checkable property here
+   * at all.  The comparison is between the captured variables and never the
+   * macros directly -- see hazard 3 at the head of this file.
    */
   const char *file_probe_a = OPENSSL_FILE;
   const char *file_probe_b = OPENSSL_FILE;
   const char *func_probe_a = OPENSSL_FUNC;
   const char *func_probe_b = OPENSSL_FUNC;
-  /* cppcheck-suppress knownConditionTrueFalse */
   const int file_ptr_checkable = file_probe_a == file_probe_b;
-  /* cppcheck-suppress knownConditionTrueFalse */
   const int func_ptr_checkable = func_probe_a == func_probe_b;
 
   int ok = 1;
@@ -796,7 +765,6 @@ static int test_err_raise_macro(void)
   TEST_ASSERT(strlen(func_probe_a) < (size_t)MOCK_CORE_TEXT_MAX);
   ok &= test;
 
-  /* --- one raise, every observable --- */
   mock_core_reset();
 
   /* Position-independent: the file string names the translation unit and
@@ -810,7 +778,6 @@ static int test_err_raise_macro(void)
      physical line; split them and the expectation is off by one. */
   expected_line_first = OPENSSL_LINE; ERR_raise(handle, 42u);
 
-  /* The order IS the contract (include/prov/err.h:49-52). */
   TEST_ASSERT_SIZE_EQ("ERR_raise: three primitives ran",
                       mock_core_obs.seq_len, (size_t)3);
   ok &= test;
@@ -827,7 +794,6 @@ static int test_err_raise_macro(void)
                       mock_core_obs.seq_dropped, 0UL);
   ok &= test;
 
-  /* Once each, not twice and not zero. */
   TEST_ASSERT_UINT_EQ("ERR_raise: new_error calls",
                       mock_core_obs.new_error_calls, 1UL);
   ok &= test;
@@ -841,7 +807,6 @@ static int test_err_raise_macro(void)
                       mock_core_obs.alt_new_error_calls, 0UL);
   ok &= test;
 
-  /* One handle, one core, forwarded to all three callbacks. */
   TEST_ASSERT_PTR_EQ("ERR_raise: new_error core identity",
                      mock_core_obs.new_error_core, &mock_core_primary);
   ok &= test;
@@ -866,7 +831,6 @@ static int test_err_raise_macro(void)
                      mock_core_obs.va_consumed, 0);
   ok &= test;
 
-  /* The call site: line, then file and function. */
   TEST_ASSERT_INT_EQ("ERR_raise: captured line is the call site",
                      mock_core_obs.line, expected_line_first);
   ok &= test;
@@ -887,7 +851,6 @@ static int test_err_raise_macro(void)
     ok &= test;
   }
 
-  /* --- a second raise, further down: the line must MOVE with the call --- */
   mock_core_reset();
 
   /* DO NOT REFLOW THE NEXT LINE -- see the note above. */
@@ -909,7 +872,6 @@ static int test_err_raise_macro(void)
                      mock_core_obs.func_text, expected_func);
   ok &= test;
 
-  /* --- two raises without a reset: the full sequence repeats --- */
   mock_core_reset();
 
   ERR_raise(handle, 44u);
@@ -948,7 +910,6 @@ static int test_err_raise_macro(void)
   return ok;
 }
 
-
 /*
  * ERR_raise_data() -- include/prov/err.h:49-52.
  *
@@ -982,9 +943,7 @@ static int test_err_raise_data_macro(void)
   const char *file_probe_b = OPENSSL_FILE;
   const char *func_probe_a = OPENSSL_FUNC;
   const char *func_probe_b = OPENSSL_FUNC;
-  /* cppcheck-suppress knownConditionTrueFalse */
   const int file_ptr_checkable = file_probe_a == file_probe_b;
-  /* cppcheck-suppress knownConditionTrueFalse */
   const int func_ptr_checkable = func_probe_a == func_probe_b;
 
   int ok = 1;
@@ -1002,7 +961,6 @@ static int test_err_raise_data_macro(void)
   if (handle == NULL)
     return 0;
 
-  /* Fixture preconditions; see test_err_raise_macro(). */
   TEST_ASSERT(strlen(file_probe_a) < (size_t)MOCK_CORE_TEXT_MAX);
   ok &= test;
   TEST_ASSERT(strlen(func_probe_a) < (size_t)MOCK_CORE_TEXT_MAX);
@@ -1012,7 +970,6 @@ static int test_err_raise_data_macro(void)
   TEST_ASSERT(strlen(detail) < (size_t)MOCK_CORE_TEXT_MAX);
   ok &= test;
 
-  /* --- format string plus an int and a string, traversal enabled --- */
   mock_core_reset();
   mock_core_obs.va_mode = MOCK_CORE_VA_INT_THEN_STR;
 
@@ -1025,7 +982,6 @@ static int test_err_raise_data_macro(void)
 
   mock_core_obs.va_mode = MOCK_CORE_VA_NONE;   /* opt out again at once */
 
-  /* Same order as ERR_raise(), because :47 delegates to :49-52. */
   TEST_ASSERT_SIZE_EQ("ERR_raise_data: three primitives ran",
                       mock_core_obs.seq_len, (size_t)3);
   ok &= test;
@@ -1079,7 +1035,6 @@ static int test_err_raise_data_macro(void)
                            mock_core_obs.fmt_ptr);
   ok &= test;
 
-  /* The varargs behind the format string survived. */
   TEST_ASSERT_INT_EQ("ERR_raise_data: traversal happened",
                      mock_core_obs.va_consumed, 1);
   ok &= test;
@@ -1093,7 +1048,6 @@ static int test_err_raise_data_macro(void)
                      mock_core_obs.va_str_text, detail);
   ok &= test;
 
-  /* The call site, exactly as for ERR_raise(). */
   TEST_ASSERT_INT_EQ("ERR_raise_data: captured line is the call site",
                      mock_core_obs.line, expected_line);
   ok &= test;
@@ -1202,4 +1156,3 @@ int main(void)
   status = TEST_REPORT("test_err_raise");
   return status != 0 || !ok ? 1 : 0;
 }
-

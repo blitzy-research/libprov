@@ -4,33 +4,26 @@
 #define LIBPROV_TESTS_PARAM_UTIL_H
 
 /*
- * OSSL_PARAM fixtures for the libprov numeric tests: descriptors built BY
- * HAND over test-owned storage, with magnitudes and expected byte patterns
- * laid out by one shared rule so the two cannot disagree.  OSSL_PARAM needs
- * no constructor, being a plain public struct whose five members
- * <openssl/core.h> fixes, and <openssl/params.h> is never included: its
- * OSSL_PARAM_get_*, set_* and construct_* families are the libcrypto
- * functions libprov's provnum_ family replaces.  Byte order is a variable
- * rather than an assumption -- every helper takes a byte's SIGNIFICANCE and
- * computes the raw index for the running host -- and widths derive from
- * sizeof and CHAR_BIT.  Type null-data and zero-size fixtures
- * OSSL_PARAM_INTEGER; param_build_null_data() says why.
+ * OSSL_PARAM fixtures for the libprov numeric tests: descriptors built BY HAND
+ * over test-owned storage.  OSSL_PARAM needs no constructor, being a plain
+ * public struct whose five members <openssl/core.h> fixes, and
+ * <openssl/params.h> is never included -- its OSSL_PARAM_get_*, set_* and
+ * construct_* families are the libcrypto functions provnum_ replaces.
  *
- * ALIASING IS A GUARANTEE HERE, not a hazard left to the caller.  A
- * fixture is usually built out of storage the test already has, so
- * param_put_msb_first(buf, n, buf, n) and param_snapshot(&p, &p) are
- * reachable calls, and every helper below answers the same whether source
- * and destination are one object, partly overlapping or wholly disjoint.
- * Two rules deliver that and must be preserved: memmove() rather than
- * memcpy() for any copy whose operands the caller chooses, memcpy() being
- * defined only for regions that do not overlap (C99 7.21.2.1); and a
- * transform that both reads and writes finishes with the source before it
- * disturbs the destination.  Rejecting overlap instead was dismissed on a
- * technical ground: deciding whether two unrelated pointers overlap needs
- * a relational comparison between pointers into different objects, which
- * C99 6.5.8p5 leaves undefined, so the check would be a worse hazard than
- * the one it screens for.  A memcpy() put back into a helper below, or a
- * fill moved ahead of the copy it follows, reopens the hazard in silence.
+ * Byte order is a variable, not an assumption: every helper takes a byte's
+ * SIGNIFICANCE and computes the raw index for the running host, and a fixture
+ * and its expectation are laid out by the same rule so the two cannot
+ * disagree.  Widths derive from sizeof and CHAR_BIT.  Null-data and zero-size
+ * fixtures are typed OSSL_PARAM_INTEGER; param_build_null_data() says why.
+ *
+ * ALIASING IS A GUARANTEE HERE: param_put_msb_first(buf, n, buf, n) and
+ * param_snapshot(&p, &p) are reachable calls, so every helper answers the same
+ * whether source and destination are one object, partly overlapping or wholly
+ * disjoint.  Two rules deliver that and must be preserved -- memmove() rather
+ * than memcpy() for any copy whose operands the caller chooses, memcpy() being
+ * defined only for non-overlapping regions (C99 7.21.2.1); and a transform
+ * that both reads and writes finishes with the source before it disturbs the
+ * destination.
  */
 
 #include <stddef.h>
@@ -38,16 +31,11 @@
 #include <limits.h>
 #include <stdint.h>
 
-/*
- * "prov/num.h" is the library header under test, included for the OSSL_PARAM
- * type; its PROVNUM_E_ codes belong to the programs' assertions, not here.
- */
 #include "prov/num.h"
 
 /*
- * No consumer uses every helper below, and a static function defined but
- * never called draws -Wunused-function.  Spelled locally, not via
- * ossl_unused.
+ * No consumer uses every helper below, so the ones a given translation unit
+ * never calls are marked as legitimately unused.
  */
 #if defined(__GNUC__)
 # define PARAMUTIL_MAYBE_UNUSED __attribute__((unused))
@@ -74,11 +62,10 @@ typedef enum {
 } param_endian_t;
 
 /*
- * Which end of a multi-byte object holds its most significant byte.  This
- * reproduces num.c's nativeendian() -- the low-addressed byte of an int
- * holding 1 -- rather than consulting __BYTE_ORDER__, because a fixture must
- * agree with the code under test.  Anything not purely little-endian counts
- * as big.
+ * Which end of a multi-byte object holds its most significant byte.  It
+ * reproduces num.c's nativeendian() rather than consulting __BYTE_ORDER__,
+ * because a fixture must agree with the code under test; anything not purely
+ * little-endian counts as big.
  */
 static PARAMUTIL_MAYBE_UNUSED param_endian_t param_host_endian(void)
 {
@@ -224,11 +211,9 @@ static PARAMUTIL_MAYBE_UNUSED int param_fill_sentinel(void *buf, size_t width)
 
 /*
  * Lay out "the low `value_bytes` bytes hold `value`, the remaining more
- * significant bytes hold `pad`", in host byte order.  One implementation for
- * this and its two wrappers is deliberate: a fixture and its expectation are
- * laid out by the same code, so they cannot disagree about byte order.
- * `value` is a bit pattern, not a signed number; a wider value region is
- * rejected.
+ * significant bytes hold `pad`" in host byte order.  `value` is a bit pattern,
+ * not a signed number.  Returns 0 having written nothing when value_bytes
+ * exceeds width, or when the buffer is null and width is non-zero.
  */
 static PARAMUTIL_MAYBE_UNUSED int param_expect_pattern(void *buf, size_t width,
                                                        uintmax_t value,
@@ -272,9 +257,9 @@ static PARAMUTIL_MAYBE_UNUSED int param_put_host_order(void *buf, size_t width,
  * hardwires its sign to POSITIVE, provnum_copy()'s padding memset writes that
  * sign, and POSITIVE is 0x00 in num.c's sign_t.  A wider destination is
  * therefore zero filled even for a negative int, where a reader might expect
- * 0xFF.  Whether it SHOULD be sign extension is genuinely open, and the
- * ambiguity must be documented by the test that exercises it, when that test
- * is written.
+ * 0xFF.  Whether it SHOULD be sign extension is genuinely open;
+ * tests/test_num_set.c records both readings in its Class C #2 block and
+ * asserts neither.
  */
 static PARAMUTIL_MAYBE_UNUSED int param_expect_zero_padded(void *buf,
                                                            size_t width,
@@ -523,35 +508,26 @@ param_build_null_data(OSSL_PARAM *param, unsigned int data_type,
 }
 
 /*
- * A parameter with a real buffer but a declared size of ZERO.  The
- * signed-versus-unsigned reasoning of param_build_null_data() applies here
- * too: a zero size is the other input that once made num.c index outside its
- * source buffer.  The shape reads two ways, both real fixtures.  As a
- * getter's SOURCE it is an empty number, answered with success and a zeroed
- * destination by a shortcut taken before the destination is checked, so it
- * succeeds even with a null destination pointer.  As a setter's DESTINATION
- * it is a zero-capacity buffer: PROVNUM_E_TOOBIG, return_size left at zero.
+ * A parameter with a real buffer but a declared size of ZERO.  Both readings
+ * of that shape are real fixtures: as a getter's SOURCE it is an empty number,
+ * answered with success and a zeroed destination by a shortcut taken before
+ * the destination is checked, so it succeeds even with a null destination
+ * pointer; as a setter's DESTINATION it is a zero-capacity buffer, answered
+ * with PROVNUM_E_TOOBIG and return_size left at zero.
  *
- * It returns 1 when the fixture was built and 0 when it was refused, and
- * the result MUST be asserted: a refusal leaves the OSSL_PARAM untouched,
- * so nothing else can reveal it.  A NULL buffer is what it refuses, and
- * that is the whole point of the verdict.  The one property distinguishing
- * this fixture from param_build_null_data() is the one thing the caller
- * supplies and nothing downstream re-checks: the pointer is a real
- * address.  Accept NULL and { NULL, type, NULL, 0, 0 } comes out -- a
- * null-data fixture wearing this function's name -- whereupon the test
- * still passes, because that shape has a documented answer of its own,
- * while no longer exercising the zero-capacity path it was written for.
- * The repaired clamp that path depends on could be reverted and this
- * fixture would not notice.
+ * Returns 1 when the fixture was built and 0 when it was refused, and the
+ * result MUST be asserted, because a refusal leaves the OSSL_PARAM untouched
+ * and nothing else can reveal it.  A NULL buffer is what it refuses: accepting
+ * one would yield { NULL, type, NULL, 0, 0 }, a null-data fixture wearing this
+ * function's name, which still passes -- that shape has a documented answer of
+ * its own -- while no longer exercising the zero-capacity path, so the clamp
+ * that path depends on could be reverted unnoticed.
  *
- * param_build_null_data() deliberately gets no mirror-image check: a
- * declared size of zero is legitimate there, because a null buffer of
- * zero size is a precedence fixture in its own right.  provnum_copy()
- * consults its empty-source shortcut BEFORE its null-data guard, so that
- * shape has to stay constructible in order to pin which of the two wins:
- * the answer is success, not PROVNUM_E_NULL.  The asymmetry is
- * contract-driven, not an oversight.
+ * param_build_null_data() gets no mirror-image check on purpose: a declared
+ * size of zero is legitimate there, because provnum_copy() consults its
+ * empty-source shortcut BEFORE its null-data guard, so that shape has to stay
+ * constructible in order to pin which of the two wins -- success, not
+ * PROVNUM_E_NULL.
  */
 static PARAMUTIL_MAYBE_UNUSED int param_build_empty(OSSL_PARAM *param,
                                                     unsigned int data_type,
@@ -593,14 +569,37 @@ static PARAMUTIL_MAYBE_UNUSED void param_snapshot(OSSL_PARAM *snapshot,
 }
 
 /*
- * Whether two parameters have identical representations.  Intended for a
- * parameter against a param_snapshot() of itself, which is why comparing
- * padding is safe: the snapshot's padding was copied from the original's, so
- * any difference reported was written afterwards.  Equally safe between two
- * param_build() results, since that clears the padding.  ONE COMBINATION IS
- * NOT SAFE, the tempting one: a param_build() result against a hand-written
- * brace initialiser, which may match in all five members yet differ in
- * padding.  Two null pointers count as identical.
+ * Whether two parameters have identical representations.  Two null pointers
+ * count as identical.
+ *
+ * THE ONE SOUND USE IS AN UNTOUCHED OBJECT AGAINST A param_snapshot() OF
+ * ITSELF: the snapshot's padding was copied from the original's, so if neither
+ * object is written afterwards any difference this reports was a real write.
+ * That is exactly the getter invariant -- provnum_get_ takes a
+ * const OSSL_PARAM * and must leave it byte-identical -- and it is what this
+ * helper exists for.  A comparison between two param_build() results is sound
+ * for the same kind of reason, since param_build() clears the padding of both.
+ *
+ * TWO USES ARE NOT SOUND, and neither is a hypothetical:
+ *
+ *   (a) A param_build() result against a hand-written brace initialiser.  The
+ *       two may agree in all five members and still differ in padding.
+ *
+ *   (b) EITHER OBJECT WRITTEN AFTER IT WAS BUILT OR SNAPSHOTTED.  C99
+ *       6.2.6.1p6 says that storing a value into a member of an object leaves
+ *       the bytes corresponding to any padding taking unspecified values, so a
+ *       byte comparison involving such an object may report a difference that
+ *       no member reflects.  This rules out the tempting shape for a SETTER
+ *       postcondition -- snapshot the parameter, overwrite the snapshot's
+ *       return_size with the observed one, then compare representations -- in
+ *       which BOTH objects have been written: `param` by the library and the
+ *       expectation by the test.  Compare the five members individually
+ *       instead, as tests/test_num_set.c does; the members are the whole of
+ *       the observable contract, and padding is no part of it.
+ *
+ * Destination BUFFERS are unaffected by all of this and are still compared
+ * byte for byte: they are unsigned char arrays with no padding to be
+ * unspecified.
  */
 static PARAMUTIL_MAYBE_UNUSED int param_identical(const OSSL_PARAM *param,
                                                   const OSSL_PARAM *snapshot)

@@ -5,23 +5,20 @@
 
 /*
  * A hand-built OpenSSL core for the libprov error tests: a test-local
- * OSSL_CORE_HANDLE, recording stubs, a call-sequence recorder, a reset
- * helper and ready-made OSSL_DISPATCH tables.  Nothing here asserts; it
- * makes values observable so a consumer can assert them.  Checks must be
- * behavioural, because struct proverr_functions_st is defined only inside
- * err.c (err.c:7-12) and include/prov/err.h:58 only forward-declares it --
- * hence two distinguishable new_error stubs, and hence the recorder that
+ * OSSL_CORE_HANDLE, recording stubs, a call-sequence recorder, a reset helper
+ * and ready-made OSSL_DISPATCH tables.  Nothing here asserts; it makes values
+ * observable so a consumer can assert them.  Every check a consumer can write
+ * has to be behavioural, because struct proverr_functions_st is defined only
+ * inside err.c (err.c:7-12) and include/prov/err.h:58 merely forward-declares
+ * it -- hence two distinguishable new_error stubs, and hence the recorder that
  * exposes the ERR_raise_data() evaluation order (include/prov/err.h:49-52).
- * Reset at the START of every case, exercise, then read mock_core_obs, never
- * in the expression that triggers it: C leaves argument evaluation order
- * unspecified.  A recorded string may live ANYWHERE, mock_core_obs
- * included, so mock_core_capture() copies with memmove() and is defined
- * for overlapping as well as disjoint arguments; its comment says why.
- * No libcrypto is linked -- the accessors err.c calls expand to static
- * inline definitions, and <openssl/params.h>, whose OSSL_PARAM_*
- * families are libcrypto functions, is deliberately absent.  Every object
- * has internal linkage, so each test executable owns its own state, and
- * because this header defines objects it is guarded.
+ *
+ * Reset at the START of every case, exercise, then read mock_core_obs -- never
+ * in the expression that triggers it, since C leaves argument evaluation order
+ * unspecified.  Every object has internal linkage, so each test executable
+ * owns its own state.  No libcrypto is linked: the accessors err.c calls
+ * expand to static inline definitions, and <openssl/params.h>, whose
+ * OSSL_PARAM_* families are libcrypto functions, is deliberately absent.
  */
 
 #include <stdarg.h>
@@ -29,12 +26,6 @@
 #include <stddef.h>
 #include <string.h>
 #include "prov/err.h"
-
-/*
- * Included directly rather than relied on transitively through "prov/err.h",
- * which also supplies OSSL_DISPATCH, the incomplete OSSL_CORE_HANDLE, the
- * OSSL_FUNC_CORE_ ids and the OSSL_FUNC_core_*_fn typedefs used below.
- */
 
 /*
  * Not every consumer uses every stub and table, and an unused static
@@ -110,14 +101,12 @@ struct ossl_core_handle_st {
 
 /*
  * The handle a test normally passes to proverr_new_handle().  Both instances
- * are const, which is what lets mock_core_reset() promise that NOTHING in
- * this file keeps state across a reset: the helper clears mock_core_obs,
- * which is then every mutable object here, and a case that assigned to a tag
- * would otherwise leak that write into every later case in the same
- * executable with no reset able to undo it.  Nothing is given up, because the
- * whole public surface takes the handle as a "const OSSL_CORE_HANDLE *"
- * (include/prov/err.h:60) and err.c only stores the pointer (err.c:57) and
- * forwards it (err.c:87, err.c:93, err.c:102), so no cast is needed anywhere.
+ * are const so that mock_core_obs is the only mutable object in this file,
+ * which is what lets mock_core_reset() isolate one case from the next: a write
+ * to a tag would leak into every later case in the same executable and no
+ * reset could undo it.  Nothing is given up -- the public surface takes a
+ * "const OSSL_CORE_HANDLE *" (include/prov/err.h:60) and err.c only stores and
+ * forwards the pointer (err.c:57, err.c:87, err.c:93, err.c:102).
  */
 MOCK_CORE_MAYBE_UNUSED
 static const OSSL_CORE_HANDLE mock_core_primary = { MOCK_CORE_TAG_PRIMARY };
@@ -201,7 +190,6 @@ struct mock_core_observations {
   unsigned long seq_dropped;
 };
 
-/* Internal linkage: each test executable gets its own observation state. */
 MOCK_CORE_MAYBE_UNUSED
 static struct mock_core_observations mock_core_obs;
 
@@ -219,20 +207,17 @@ static struct mock_core_observations mock_core_obs;
 
 /*
  * Copy a string into fixed storage, truncating rather than overrunning and
- * always NUL-terminating.  A NULL source yields an empty string; the caller
- * records the pointer separately, so emptiness is never confused with NULL.
- * A counted copy with an explicit terminator, not strncpy(), which would
- * leave an exact-length source unterminated.  And memmove() for that copy,
- * not memcpy(): `text` is whatever the code under test forwarded and
- * `buffer` is a field of mock_core_obs, so a stub aimed at the buffer it is
- * about to fill, or a test re-raising with a string it read back out of
- * mock_core_obs, makes the two ranges overlap -- undefined for memcpy()
- * (C99 7.21.2.1), defined for memmove().  Detecting the overlap instead
- * would need a relational comparison between pointers into different
- * objects, which C99 6.5.8p5 leaves undefined, so it is tolerated rather
- * than screened for.  The rest of the order is already overlap-proof and
- * must stay so: strlen() finishes reading before the copy starts, and the
- * terminator lands one past the bytes just written.
+ * always NUL-terminating; a NULL source yields an empty string, and the caller
+ * records the pointer separately so emptiness is never confused with NULL.
+ * memmove() rather than memcpy() because `text` is whatever the code under
+ * test forwarded while `buffer` is a field of mock_core_obs, so a test
+ * re-raising with a string it read back out of mock_core_obs makes the two
+ * ranges overlap -- undefined for memcpy() (C99 7.21.2.1), defined for
+ * memmove().  Screening for the overlap instead would need a relational
+ * comparison between pointers into different objects, which C99 6.5.8p5
+ * leaves undefined.  The surrounding order must stay overlap-proof too:
+ * strlen() finishes reading before the copy starts, and the terminator lands
+ * one past the bytes just written.
  */
 MOCK_CORE_MAYBE_UNUSED
 static void mock_core_capture(char *buffer, size_t capacity, const char *text)
@@ -267,7 +252,6 @@ static void mock_core_record(int ordinal)
   else
     mock_core_obs.seq_dropped++;
 }
-
 
 /*
  * Return the observation state to its initial condition, at the START of
@@ -360,10 +344,10 @@ static void mock_core_alt_new_error(const OSSL_CORE_HANDLE *prov)
  * OSSL_FUNC_CORE_SET_ERROR_DEBUG (id 6).  The line number is where the
  * call-site capture becomes checkable: include/prov/err.h:51 passes
  * OPENSSL_LINE, which expands at the macro's call site, so a test records
- * __LINE__ on the same physical line as its ERR_raise() and compares -- on a
- * following line the expectation would be off by one.  The captured file and
- * function are checked by string content, since equal literals need not
- * share an address.
+ * OPENSSL_LINE on the same physical line as its ERR_raise() and compares -- on
+ * a following line the expectation would be off by one.  The captured file and
+ * function are checked by string content, since equal literals need not share
+ * an address.
  */
 MOCK_CORE_MAYBE_UNUSED
 static void mock_core_set_error_debug(const OSSL_CORE_HANDLE *prov,
@@ -439,19 +423,20 @@ static void mock_core_signature_check(void)
   (void)as_vset_error;
 }
 
-
 /*
- * The dispatch tables: each is a table the OpenSSL core could plausibly hand
- * a provider, shaped to make one property of err.c's resolution loop
- * observable.  Those properties are all silent -- no return value, no
- * diagnostic, nothing a compiler would catch: err.c:34 stops the scan at the
- * first entry whose function_id is 0; the switch at err.c:35-45 has no
- * default label, so an unrecognised id is skipped rather than rejected; and
- * err.c:36-44 lets a later entry overwrite an earlier one, so the LAST
- * occurrence survives.  Every table ends with a literal { 0, NULL },
- * mirroring that id-0 sentinel.  The (void (*)(void)) casts are what an
- * OSSL_DISPATCH entry requires, and are safe because err.c casts back
- * through the accessors before calling.
+ * The dispatch tables are synthetic fixtures, several of them deliberately
+ * adversarial: each is shaped to make one property of err.c's resolution loop
+ * observable, and some -- the incomplete tables, and the ids 8 and 9 that bind
+ * a mismatched callback type precisely because they must be ignored -- are
+ * shapes a real core would never hand a provider.  The properties they expose
+ * are all silent, with no return value and no diagnostic: err.c:34 stops the
+ * scan at the first entry whose function_id is 0; the switch at err.c:35-45
+ * has no default label, so an unrecognised id is skipped rather than rejected;
+ * and err.c:36-44 lets a later entry overwrite an earlier one, so the LAST
+ * occurrence survives.  Every table ends with a literal { 0, NULL }, mirroring
+ * that id-0 sentinel.  The (void (*)(void)) casts are what an OSSL_DISPATCH
+ * entry requires, and are safe because err.c casts back through the accessors
+ * before calling.
  */
 
 /*

@@ -1,4 +1,4 @@
-/* CC0 license applied, see LICENCE.md */
+/* CC0 license applied, see LICENSE */
 
 #include <string.h>
 #include "prov/num.h"
@@ -46,8 +46,7 @@ struct numdesc {
     /* These fields concern the limbs of the number */
     size_t limbsize;
     endian_t limbendian;
-    /* This is for odd archs. */
-    /* see the manual for mpz_import() for an in depth explanation. */
+    /* Unused bits at the top of each limb, on architectures that have them. */
     size_t limbnailbits;
 };
 
@@ -77,7 +76,6 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
         return result;
     }
 
-    /* Extra data */
     size_t srcmsb = src.endian == BIG ? 0 : src.size - 1;
     int srcmsb2lsb = src.endian == BIG ? 1 : -1;
 
@@ -87,10 +85,10 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
      * The rules to determine if the most significant byte is just padding
      * are:
      *
-     * 1. the most significant byte equals srcsigned, which just so happens
+     * 1. the most significant byte equals src.sign, which just so happens
      *    to have the 2's complement padding value.
      * 2. The most significant bit of the next to most significant byte
-     *    equals the most significant bit of srcsigned.
+     *    equals the most significant bit of src.sign.
      */
     /*
      * Clamping a zero-capacity destination keeps the loop below from walking

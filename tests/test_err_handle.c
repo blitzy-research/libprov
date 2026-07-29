@@ -6,66 +6,46 @@
  * proverr_dup_handle() copies, and what proverr_free_handle() must leave
  * alone.
  *
- * No user-specified rules exist for this project -- review_rules reports
- * none -- so this file is held to enterprise-standard best practice and to
- * the directives in the prompt: construct or mock the OpenSSL types rather
- * than depending on a running provider or on libcrypto, assert specific
- * values rather than the absence of a crash, keep every case independent,
- * and leave every non-test source untouched.  err.c is a contract source
- * here and nothing else; it is not modified.
- *
- * *** THE HANDLE IS OPAQUE, SO EVERY CHECK IS BEHAVIOURAL ***
- *
- * struct proverr_functions_st is defined only inside err.c (err.c:7-12) and
- * include/prov/err.h:58 merely forward-declares it, so the type is
- * incomplete in this translation unit and handle->core, handle->core_new_error
- * and friends are not readable here -- they would not compile.  "The handle
- * stored the right core and the right callbacks" is therefore proved the only
- * way it can be: raise an error through the handle and assert WHICH stub ran,
- * HOW MANY times, IN WHAT ORDER and WITH WHAT arguments.  That is also why
+ * THE HANDLE IS OPAQUE, SO EVERY CHECK IS BEHAVIOURAL.  struct
+ * proverr_functions_st is defined only inside err.c (err.c:7-12) and
+ * include/prov/err.h:58 merely forward-declares it, so the type is incomplete
+ * in this translation unit and handle->core, handle->core_new_error and
+ * friends are not readable here -- they would not compile.  "The handle stored
+ * the right core and the right callbacks" is therefore proved the only way it
+ * can be: raise an error through the handle and assert WHICH stub ran, HOW
+ * MANY times, IN WHAT ORDER and WITH WHAT arguments.  That is also why
  * mock_core.h binds two distinguishable new_error stubs -- without a second
  * one, "the last duplicate won" would be unobservable -- and why its
  * call-sequence recorder is load-bearing rather than decorative.
  *
- * *** THIS TARGET LINKS THE LIBRARY, SO NO ABORTING INPUT BELONGS HERE ***
- *
- * The test_err_handle target is built from this source alone and linked
- * against libprov, which is compiled with the project's default flags, so the
- * five assertions inside err.c are LIVE.  proverr_new_handle(NULL, table),
- * proverr_new_handle(core, NULL) and every incomplete table -- the empty one
- * and the three that omit one callback -- abort at err.c:26, err.c:27 and
- * err.c:47-49, which would kill this process in the middle of the suite.
- * Those inputs belong exclusively to tests/test_err_death.c, which asserts
- * the abort positively from a forked child, and to tests/test_err_guards.c,
- * which asserts the graceful NULL returns that err.c:29-32 and err.c:51-54
- * make reachable under NDEBUG.  Do not "helpfully" add a NULL-core case here.
+ * NO ABORTING INPUT BELONGS HERE.  This target must be built from this source
+ * alone and linked against libprov, whose err.c is compiled with the project's
+ * default flags, so the five assertions inside err.c are LIVE.
+ * proverr_new_handle(NULL, table), proverr_new_handle(core, NULL) and every
+ * incomplete table -- the empty one and the three that omit one callback --
+ * abort at err.c:26, err.c:27 and err.c:47-49, which would kill this process
+ * in the middle of the suite.  Those inputs belong exclusively to
+ * tests/test_err_death.c, which asserts the abort positively from a forked
+ * child, and to tests/test_err_guards.c, which asserts the graceful NULL
+ * returns that err.c:29-32 and err.c:51-54 make reachable under NDEBUG.  Do
+ * not "helpfully" add a NULL-core case here.
  *
  * What is exercised here is therefore exactly the set of inputs that cannot
  * abort: tables that resolve all three callbacks -- in order, shuffled, with
  * unrecognised ids, with duplicates, with junk after the sentinel -- plus
  * proverr_dup_handle() and proverr_free_handle() including their NULL
- * arguments, neither of which asserts anything about its argument
- * (err.c:70, err.c:82).
+ * arguments, neither of which asserts anything about its argument (err.c:70,
+ * err.c:82).
+ *
+ * NO LIBCRYPTO.  <openssl/params.h> is absent by design: its OSSL_PARAM_
+ * families are libcrypto functions, and nothing here needs an OSSL_PARAM.  The
+ * core is mock_core.h's hand-built one throughout.
  */
 
-/*
- * testutil.h first: it pulls in nothing but the C standard library, so it
- * cannot perturb what follows.  mock_core.h supplies the hand-built core --
- * the test-local OSSL_CORE_HANDLE, the recording stubs, the call-sequence
- * recorder, the reset helper and the dispatch tables -- and prov/err.h is the
- * public header of the unit under test.  <openssl/params.h> is absent by
- * design: its OSSL_PARAM_ families are libcrypto functions, and nothing in
- * this file needs an OSSL_PARAM at all.
- */
 #include "testutil.h"
 #include "mock_core.h"
 #include "prov/err.h"
 
-/*
- * Named directly rather than leant on transitively: NULL from <stddef.h>,
- * uint32_t for the reason a raise carries from <stdint.h>, and snprintf()
- * from <stdio.h> for the composed assertion labels.
- */
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -78,18 +58,18 @@
 
 /*
  * Compose "where: what" into storage the CALLER owns, so that a failing line
- * names the case as well as the property.  It matters because the shared
- * probe below does most of the asserting: the file:line testutil.h prints is
- * the line inside that probe, identical for every case, so the case has to
- * travel in the label instead.
+ * names the case as well as the property.  It matters because the shared probe
+ * below does most of the asserting: the file:line testutil.h prints is the
+ * line inside that probe, identical for every case, so the case has to travel
+ * in the label instead.
  *
  * The buffer is always a local of the calling function and never a static,
- * which is what keeps this helper re-entrant and keeps the file free of
- * mutable state of its own -- mock_core_obs is the only mutable object any
- * case touches, and mock_core_reset() owns it.  snprintf() truncates rather
- * than overruns and always terminates (C99 7.19.6.5); its return value is
- * deliberately unused because a truncated label is a cosmetic loss, not a
- * test result, and cannot happen at these lengths anyway.
+ * which keeps this helper re-entrant and keeps the file free of mutable state
+ * of its own -- mock_core_obs is the only mutable object any case touches, and
+ * mock_core_reset() owns it.  Given a nonzero capacity snprintf() truncates
+ * rather than overruns and writes a terminating null (C99 7.19.6.5), and every
+ * caller here passes sizeof of a LABEL_MAX array; its return value is unused
+ * because a truncated label is a cosmetic loss, not a test result.
  */
 static const char *case_label(char *buffer, size_t capacity,
                               const char *where, const char *what)
@@ -138,15 +118,13 @@ static const OSSL_DISPATCH local_dispatch_nonnull_sentinel[] = {
 };
 
 /*
- * Every function below spells out the project's accumulator idiom -- an
- * "int ret = 1;" of its own, then "TEST_ASSERT_...(...); ret &= test;" -- and
+ * Every function below spells out the project's accumulator idiom -- an "int
+ * ret = 1;" of its own, then "TEST_ASSERT_...(...); ret &= test;" -- and
  * returns it, so a case reports one verdict while still printing a line per
- * assertion.  That local deliberately shadows the file-scope `ret` testutil.h
- * defines: the header makes its four objects tentative definitions precisely
- * so a test may declare its own, and the shadowed object is untouched by this
- * file and independently refreshed from the counters, so nothing is lost.  It
- * is the reason a -Wshadow build -- a warning the project does not enable --
- * has something to say here, and it is intentional.
+ * assertion.  That local shadows the file-scope accumulator testutil.h
+ * declares with internal linkage for the same purpose; the shadowed object is
+ * untouched by this file and is independently refreshed from the counters by
+ * every assertion, so it cannot accumulate across a function anyway.
  *
  * The accumulated verdicts are belt to testutil.h's braces, never a substitute
  * for them: the exit status in main() is derived from the counters as well.
@@ -156,13 +134,12 @@ static const OSSL_DISPATCH local_dispatch_nonnull_sentinel[] = {
  * The invoke-and-observe probe, written once and reused by every case: raise
  * one error through `handle` and assert everything that raise makes visible.
  *
- * ERR_raise() expands to the comma expression at include/prov/err.h:49-52,
- * so one call reaches all three forwarders -- proverr_new_error(),
- * proverr_set_error_debug() and proverr_set_error() -- and each of those
- * forwards the core pointer the handle stored at err.c:57 (err.c:87,
- * err.c:93, err.c:102).  Pointer IDENTITY is the right claim for all three,
- * because err.c only passes the pointer through and never copies what it
- * points at.
+ * ERR_raise() expands to the comma expression at include/prov/err.h:49-52, so
+ * one call reaches all three forwarders -- proverr_new_error(),
+ * proverr_set_error_debug() and proverr_set_error() -- and each forwards the
+ * core pointer the handle stored at err.c:57 (err.c:87, err.c:93, err.c:102).
+ * Pointer IDENTITY is the right claim for all three, because err.c passes the
+ * pointer through and never copies what it points at.
  *
  * The raise is a statement of its own and the observations are read only
  * afterwards: C does not specify the order in which function-call arguments
@@ -172,13 +149,13 @@ static const OSSL_DISPATCH local_dispatch_nonnull_sentinel[] = {
  * The alternate new_error stub is asserted to have run zero times on EVERY
  * path, not only where a table binds it.  In the three tables that do bind it
  * -- unknown ids, duplicate ids, entries after the sentinel -- that zero is
- * the entire proof; everywhere else it is a free guarantee that resolution
- * did not drift onto it.
+ * the entire proof; everywhere else it is a free guarantee that resolution did
+ * not drift onto it.
  *
  * Full macro-contract coverage -- the captured OPENSSL_FILE, the call-site
  * OPENSSL_LINE, OPENSSL_FUNC, the reason extremes and va_list recovery -- is
- * tests/test_err_raise.c's subject.  Here the macro is a means: it is the
- * only instrument that can see inside an opaque handle.
+ * tests/test_err_raise.c's subject.  Here the macro is a means: it is the only
+ * instrument that can see inside an opaque handle.
  */
 static int raise_and_observe(const char *where,
                              const struct proverr_functions_st *handle,
@@ -190,7 +167,6 @@ static int raise_and_observe(const char *where,
 
   ERR_raise(handle, reason);
 
-  /* One call each per raise: err.h:49-52 names all three exactly once. */
   TEST_ASSERT_UINT_EQ(AT("new_error calls"), mock_core_obs.new_error_calls,
                       1UL);
   ret &= test;
@@ -209,7 +185,6 @@ static int raise_and_observe(const char *where,
                       mock_core_obs.alt_new_error_calls, 0UL);
   ret &= test;
 
-  /* The stored core (err.c:57) reaches all three forwarders unchanged. */
   TEST_ASSERT_PTR_EQ(AT("core forwarded to new_error"),
                      mock_core_obs.new_error_core, expected_core);
   ret &= test;
@@ -220,7 +195,6 @@ static int raise_and_observe(const char *where,
                      mock_core_obs.vset_error_core, expected_core);
   ret &= test;
 
-  /* err.c:102 forwards the reason verbatim. */
   TEST_ASSERT_UINT_EQ(AT("reason forwarded"), mock_core_obs.reason, reason);
   ret &= test;
 
@@ -284,10 +258,6 @@ static int assert_quiescent(const char *where, const char *what)
   return ret;
 }
 
-/*
- * One case per property of err.c's resolution loop, then duplication, then
- * freeing, then the claim that a handle keeps the core it was given.
- */
 static int test_complete_table(void);
 static int test_shuffled_table(void);
 static int test_unknown_ids(void);
@@ -417,18 +387,8 @@ static int test_unknown_ids(void)
 
   ret &= assert_quiescent(where, "stubs run by resolution alone");
 
-  /*
-   * raise_and_observe() requires the alternate stub to have run zero times,
-   * which is the whole proof for this table: all three unrecognised entries
-   * point at it, so a single call would mean one of them had been accepted.
-   */
   ret &= raise_and_observe(where, handle, &mock_core_primary, 44u);
 
-  /*
-   * And nothing was ever handed to it, so its recorded core stays as
-   * mock_core_reset() left it.  Stated separately because a count and a
-   * pointer fail for different reasons.
-   */
   TEST_ASSERT_PTR_NULL(AT("core seen by the alternate stub"),
                        mock_core_obs.alt_new_error_core);
   ret &= test;
@@ -468,11 +428,6 @@ static int test_duplicate_ids(void)
   ret &= assert_quiescent(where, "stubs run by resolution alone");
   ret &= raise_and_observe(where, handle, &mock_core_primary, 45u);
 
-  /*
-   * The ordinal recorded first would be MOCK_CORE_ORD_ALT_NEW_ERROR had the
-   * first duplicate won, so the order assertion inside the probe is a second,
-   * independent witness to the same fact.
-   */
   TEST_ASSERT_INT_EQ(AT("first ordinal is the primary stub's"),
                      mock_core_obs.seq[0], MOCK_CORE_ORD_NEW_ERROR);
   ret &= test;
@@ -550,11 +505,6 @@ static int test_zero_id_terminates(void)
   ret &= assert_quiescent(where, "stubs run by resolution alone");
   ret &= raise_and_observe(where, handle, &mock_core_primary, 50u);
 
-  /*
-   * The terminating entry's own callback is never invoked either: a zero id
-   * means end-of-array, so the function beside it is not a candidate for any
-   * slot.
-   */
   TEST_ASSERT_PTR_NULL(AT("core seen by the terminator's own callback"),
                        mock_core_obs.alt_new_error_core);
   ret &= test;
@@ -574,8 +524,8 @@ static int test_zero_id_terminates(void)
  * observation the source produces.  The independence claim is the one that
  * pins the shallow-copy semantics: a dup rewritten to alias the source, or to
  * take ownership of anything the source also owns, would leave the source
- * unusable -- or leave this case reading freed memory, which is why it is also
- * run under AddressSanitizer.
+ * unusable, or leave this case reading freed memory -- which a sanitizer build
+ * reports and an ordinary build may not.
  *
  * Allocation failure is the other way proverr_dup_handle() can return NULL;
  * that path needs an allocator interposer and belongs to
@@ -605,7 +555,6 @@ static int test_dup_handle(void)
     return 0;
   }
 
-  /* err.c:71 allocates, so the copy is its own object and not an alias. */
   TEST_ASSERT_PTR_NE(AT("copy is distinct from the source"), copy, source);
   ret &= test;
   if (copy == source) {
@@ -620,13 +569,8 @@ static int test_dup_handle(void)
     return 0;
   }
 
-  /* Copying members (err.c:72-75) calls none of them. */
   ret &= assert_quiescent(where, "stubs run by new_handle and dup together");
 
-  /*
-   * Same core, same three callbacks, same order -- the only reading of
-   * "identical contents" available from outside err.c.
-   */
   ret &= raise_and_observe("dup handle / raise through the copy", copy,
                            &mock_core_primary, 47u);
 
@@ -676,6 +620,24 @@ static int test_dup_handle(void)
  * across the free, and they must still hold their absolute values afterwards.
  * The delta alone would be satisfied if both sides were zero, which is exactly
  * what a free that also reset the observation state would produce.
+ *
+ * WHAT THIS CASE CANNOT REACH, AND WHERE IT IS REACHED INSTEAD.  Everything
+ * asserted here is about what proverr_free_handle() must NOT do.  The positive
+ * fact -- that it releases the block, that it releases exactly the block it
+ * was given, and that it releases it exactly once -- is invisible from this
+ * translation unit: the function returns nothing, writes through nothing and
+ * calls no stub, so a body deleted outright would satisfy every assertion
+ * below.  Proving the release therefore needs the allocator itself to be the
+ * witness, which needs link-time interposition, which is a per-target link
+ * option and not something a source file can arrange for itself.  That is
+ * exactly what tests/test_err_alloc.c is registered with, and its cases A-9 to
+ * A-12 assert the release positively: pointer identity of the block handed to
+ * free, a call count of exactly one per release, the source surviving while
+ * its duplicate's block goes away, and a ledger of blocks supplied against
+ * blocks released that must close at zero.  Nothing here is redundant with
+ * those -- the two halves are complementary, and this comment exists so that a
+ * reader who notices the gap can find where it is closed rather than
+ * concluding it is open.
  */
 static int test_free_handle(void)
 {
@@ -792,10 +754,33 @@ static int test_distinct_cores(void)
     return 0;
   }
 
-  /* Two malloc() calls at err.c:56, so two distinct objects. */
   TEST_ASSERT_PTR_NE(AT("the two handles are distinct objects"),
                      primary_handle, alternate_handle);
   ret &= test;
+
+  /*
+   * That verdict is a PRECONDITION for everything below, not a remark, so it
+   * is captured and acted on.  Every line that follows either reads through
+   * both handles or releases both, and all of it is defined only if they
+   * really are two objects: against a library that pooled or cached handles
+   * -- returning its single object twice -- an ungated body would raise
+   * through a handle it had already freed, make the "each handle forwards its
+   * OWN core" checks below meaningless, and finally free that one object
+   * TWICE at the tail of this function.  That is a double free (CWE-415): it
+   * turns a clean, self-diagnosing contract mismatch into heap corruption or
+   * an abort, and an abort discards whatever stdout still had buffered,
+   * taking the failure line that explains it with it.
+   *
+   * The aliased path therefore releases the object EXACTLY ONCE and returns
+   * failure, exactly as the null-handle guard above does.  `ret` is already 0
+   * because the assertion recorded the mismatch -- which is the diagnosis,
+   * and is what testutil.h's counters derive the exit status from -- but 0 is
+   * returned explicitly so the verdict does not depend on that coupling.
+   */
+  if (primary_handle == alternate_handle) {
+    proverr_free_handle(primary_handle);
+    return 0;
+  }
 
   ret &= assert_quiescent(where, "stubs run by building both handles");
 
@@ -815,4 +800,3 @@ static int test_distinct_cores(void)
   proverr_free_handle(alternate_handle);
   return ret;
 }
-

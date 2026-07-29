@@ -47,7 +47,8 @@
 #     else()
 #       set(LIBPROV_TESTS_DEFAULT OFF)
 #     endif()
-#     option(LIBPROV_TESTS "Build and possibly run tests" ${LIBPROV_TESTS_DEFAULT})
+#     option(LIBPROV_TESTS "Build and possibly run tests"
+#            ${LIBPROV_TESTS_DEFAULT})
 #
 #     if(LIBPROV_TESTS)
 #       include(CTest)
@@ -249,9 +250,11 @@ libprov_add_test(test_err_raise   SOURCES test_err_raise.c)
 # ndebug target therefore needs BOTH defines and they do different jobs:
 # NDEBUG reconfigures err.c, and the marker tells the test body which of the
 # two contracts to assert.
-libprov_add_test(test_err_guards  SOURCES test_err_guards.c ${PROJECT_SOURCE_DIR}/err.c
+libprov_add_test(test_err_guards
+                 SOURCES test_err_guards.c ${PROJECT_SOURCE_DIR}/err.c
                  COPTS -UNDEBUG)
-libprov_add_test(test_err_guards_ndebug SOURCES test_err_guards.c ${PROJECT_SOURCE_DIR}/err.c
+libprov_add_test(test_err_guards_ndebug
+                 SOURCES test_err_guards.c ${PROJECT_SOURCE_DIR}/err.c
                  DEFS NDEBUG LIBPROV_TEST_NDEBUG_VARIANT)
 
 # ---------------------------------------------------------------------------
@@ -281,7 +284,8 @@ libprov_add_test(test_err_guards_ndebug SOURCES test_err_guards.c ${PROJECT_SOUR
 # in the harness degrades into a reported timeout instead of a hung suite.  It
 # is not a skip mechanism and it excuses no failure.
 if(UNIX)
-  libprov_add_test(test_err_death SOURCES test_err_death.c ${PROJECT_SOURCE_DIR}/err.c
+  libprov_add_test(test_err_death
+                   SOURCES test_err_death.c ${PROJECT_SOURCE_DIR}/err.c
                    COPTS -UNDEBUG)
   set_tests_properties(test_err_death PROPERTIES TIMEOUT 30)
 endif()
@@ -297,20 +301,31 @@ endif()
 # the calls to the countdown interposer inside test_err_alloc.c, which fails
 # the next N allocations and then delegates to __real_malloc.
 #
+# -Wl,--wrap=free is here for the mirror-image reason: deallocation is
+# otherwise not observable at all.  err.c:82 is a bare free() inside
+# proverr_free_handle(), which returns no value, writes no output parameter and
+# invokes no callback, so a proverr_free_handle() whose body were deleted
+# outright would leave every other assertion in this suite passing.  With free
+# wrapped, the released pointer, the call count and the running balance between
+# blocks supplied and blocks released all become values test_err_alloc.c
+# compares.  calloc and realloc are deliberately NOT wrapped: err.c never calls
+# them, so wrapping them would be scope creep with no contract behind it.
+#
 # Note what this target does NOT do: it does not compile a private copy of
 # err.c.  --wrap works at LINK time on undefined references, so the `malloc`
 # references already inside libprov's err.c.o are rewritten without err.c
 # being recompiled or even aware.  Adding err.c to the source list here would
 # be redundant at best.
 #
-# The option cannot go missing unnoticed, which matters because every
-# assertion in that file would turn vacuous if it did: __real_malloc is a name
-# only --wrap creates, so a build without the option fails to LINK rather than
-# producing a binary that quietly proves nothing.
+# Neither option can go missing unnoticed, which matters because every
+# assertion in that file would turn vacuous if it did: __real_malloc and
+# __real_free are names only --wrap creates, so a build without both options
+# fails to LINK rather than producing a binary that quietly proves nothing.
 #
 # --wrap is a GNU ld feature.  Where it is unavailable this target is, again,
 # NOT REGISTERED AT ALL rather than skipped or allowed to fail.  APPLE is
 # excluded because ld64 has no --wrap.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND UNIX AND NOT APPLE)
-  libprov_add_test(test_err_alloc SOURCES test_err_alloc.c LINKOPTS "-Wl,--wrap=malloc")
+  libprov_add_test(test_err_alloc SOURCES test_err_alloc.c
+                   LINKOPTS "-Wl,--wrap=malloc" "-Wl,--wrap=free")
 endif()

@@ -1,8 +1,8 @@
 /* CC0 license applied, see LICENSE */
 
 /*
- * tests/test_err_guards.c -- proverr_new_handle()'s TWO argument-validation
- * contracts, asserted from ONE source compiled TWICE.
+ * proverr_new_handle()'s TWO argument-validation contracts, asserted from ONE
+ * source compiled TWICE.
  *
  * err.c validates its arguments twice over: with assert() (err.c:26, :27, :47,
  * :48, :49) and again with a preprocessor-guarded early return (err.c:29-32,
@@ -10,46 +10,31 @@
  * set of flags.  Where an assertion is live it aborts the process before the
  * matching early return can be taken; where NDEBUG has removed the assertions
  * the early return is what runs.  No single compilation can observe both, so
- * covering both means compiling the same source twice -- which is what this
- * file is for, and why the suite registers two targets built from it.
+ * covering both means compiling this source twice, from two registered
+ * targets.
  *
  * One case, test_common_happy_path(), is asserted IDENTICALLY by both
  * variants.  That is deliberate: it proves the two binaries really are the
  * same source under different flags, and that the variant marker only ADDS
- * cases rather than replacing the body wholesale.  A variant that compiled
- * away to nothing would not quietly pass -- testutil.h derives the exit status
- * from its assertion counters and fails a run that asserted nothing -- but the
- * shared case makes the property visible rather than merely provable.
+ * cases rather than replacing the body wholesale.
  *
- * ---------------------------------------------------------------------------
- * NO USER-SPECIFIED RULES EXIST FOR THIS PROJECT.  The rules facility
- * reported, in full, "No user rules provided", matching the plan's own
- * finding.  What this file honours are therefore the constraints stated in the
- * user's request -- no smoke tests, no modification of non-test sources,
- * genuine ambiguity documented rather than asserted, OpenSSL types mocked
- * rather than depended upon -- held to enterprise-standard practice.  No rule
- * is invented to stand in for the ones that do not exist.
- * ---------------------------------------------------------------------------
+ * WHAT THE TWO TARGETS MUST BE, AND WHY THE OBVIOUS ARRANGEMENT DOES NOT WORK
  *
- * THE BUILD ARRANGEMENT, AND WHY THE OBVIOUS ONE DOES NOT WORK
+ *   test_err_guards         this source + <top>/err.c, compiled -UNDEBUG
+ *   test_err_guards_ndebug  this source + <top>/err.c, compiled
+ *                           -DNDEBUG -DLIBPROV_TEST_NDEBUG_VARIANT
  *
- * tests/CMakeLists.txt builds two executables from this one file:
- *
- *   test_err_guards         test_err_guards.c + <top>/err.c
- *                           COPTS -UNDEBUG
- *   test_err_guards_ndebug  test_err_guards.c + <top>/err.c
- *                           DEFS NDEBUG LIBPROV_TEST_NDEBUG_VARIANT
- *
- * Note what is in the source list: err.c itself, compiled afresh into each
- * target.  That is not tidiness, it is the only thing that makes the NDEBUG
- * variant real.  assert() expands according to the NDEBUG state of the
- * translation unit that CONTAINS it, and the calls that matter here are inside
- * err.c.  The libprov library compiles err.c exactly once, without NDEBUG, so
- * defining NDEBUG on a test target that merely LINKS that archive changes
- * nothing about the object already in it: such a "NDEBUG variant" would still
- * abort, and every NULL-return assertion in it would be a fiction rather than
- * a test.  Recompiling err.c with each target's own flags is what puts the
- * guard state under this file's control.
+ * Note what has to be in each source list: err.c itself, compiled AFRESH into
+ * each target, and each target's flags -- including the -UNDEBUG on the
+ * default one -- have to apply to that compilation.  That is not tidiness, it
+ * is the only thing that makes the NDEBUG variant real.  assert() expands
+ * according to the NDEBUG state of the translation unit that CONTAINS it, and
+ * the calls that matter here are inside err.c.  The libprov library compiles
+ * err.c exactly once, without NDEBUG, so defining NDEBUG on a test target that
+ * merely LINKS that archive changes nothing about the object already in it:
+ * such an "NDEBUG variant" would still abort, and every NULL-return assertion
+ * in it would be a fiction rather than a test.  Recompiling err.c with each
+ * target's own flags is what puts the guard state under this file's control.
  *
  * Reading err.c is not modifying it.  Compiling it into a test target leaves
  * err.c byte-for-byte untouched, so the arrangement is fully compatible with
@@ -58,11 +43,12 @@
  * Linking stays unambiguous even though libprov is still linked for num.c's
  * sake: a definition in an object file named on the command line satisfies the
  * reference before the archive is searched, so the corresponding library
- * member is never extracted and each binary holds exactly one
- * proverr_new_handle().  `nm` confirms that, and also confirms the flags
- * actually landed -- the ndebug binary contains no reference to __assert_fail
- * at all, while the default binary does.  If that ever stops being true, the
- * NDEBUG variant has silently become a duplicate of the default one.
+ * member is never extracted and each binary must hold exactly one
+ * proverr_new_handle().  Two properties are worth checking with `nm` after any
+ * change to the build: exactly one definition of that symbol per binary, and
+ * no reference to __assert_fail in the ndebug binary while the default one has
+ * at least one.  If either stops holding, the NDEBUG variant has silently
+ * become a duplicate of the default one.
  *
  * WHY THE SELECTOR BELOW IS LIBPROV_TEST_NDEBUG_VARIANT AND NOT NDEBUG
  *
@@ -101,13 +87,12 @@
  *
  * Default variant (-UNDEBUG; DEBUG is never defined as a preprocessor macro
  * anywhere in this project -- see the Class C note at the foot of this file):
- *   - A NULL core or a NULL dispatch aborts at err.c:26 / err.c:27.  The
- *     early return at err.c:29-32 is compiled IN, because it is guarded on
- *     DEBUG rather than on NDEBUG, but it is DOMINATED by those two
- *     assertions and so cannot be reached.  That is a named exclusion, not a
- *     coverage gap.
- *   - Any table that leaves a required callback unresolved aborts at
- *     err.c:47, :48 or :49.  The early return at err.c:51-54 is compiled OUT.
+ *   - A NULL core or a NULL dispatch aborts at err.c:26 / err.c:27.  The early
+ *     return at err.c:29-32 is compiled IN, because it is guarded on DEBUG
+ *     rather than on NDEBUG, but it is DOMINATED by those two assertions and
+ *     so cannot be reached.  That is a named exclusion, not a coverage gap.
+ *   - Any table that leaves a required callback unresolved aborts at err.c:47,
+ *     :48 or :49.  The early return at err.c:51-54 is compiled OUT.
  *   - Hence NO NULL-return path is reachable in this variant at all.  Its job
  *     is to assert the paths that do NOT abort, and to document the ones that
  *     do; the positive abort assertions belong to tests/test_err_death.c,
@@ -117,63 +102,45 @@
  * NDEBUG variant (-DNDEBUG plus the marker):
  *   - All five assertions vanish.
  *   - The early return at err.c:29-32 is still compiled in, and is now
- *     REACHABLE: it is the mechanism that returns NULL for a NULL core and
- *     for a NULL dispatch.
- *   - The early return at err.c:51-54 is now compiled IN, and is the
- *     mechanism that returns NULL for the empty table and for each table
- *     missing exactly one required callback.
+ *     REACHABLE: it is the mechanism that returns NULL for a NULL core and for
+ *     a NULL dispatch.
+ *   - The early return at err.c:51-54 is now compiled IN, and is the mechanism
+ *     that returns NULL for the empty table and for each table missing exactly
+ *     one required callback.
  *   - Hence all six graceful NULL returns are reachable here, and all six are
  *     asserted below.
  *
- * THE HANDLE IS OPAQUE
+ * THE HANDLE IS OPAQUE.  struct proverr_functions_st is defined only inside
+ * err.c (err.c:7-12); include/prov/err.h:58 merely forward-declares it.  No
+ * test can read a member, so "the handle is well formed" is never a structural
+ * claim here -- it is established BEHAVIOURALLY, by raising through the handle
+ * and checking what the recording stubs in tests/mock_core.h saw.  A handle
+ * that resolved the wrong callback, or stored the wrong core pointer, fails
+ * those checks even though it is non-NULL.
  *
- * struct proverr_functions_st is defined only inside err.c (err.c:7-12);
- * include/prov/err.h:58 merely forward-declares it.  No test can read a
- * member, so "the handle is well formed" is never a structural claim here --
- * it is established BEHAVIOURALLY, by raising through the handle and checking
- * what the recording stubs in tests/mock_core.h saw.  A handle that resolved
- * the wrong callback, or stored the wrong core pointer, fails those checks
- * even though it is non-NULL.
- *
- * CONVENTIONS
- *
- * C99, /-star comments only, two-space indentation, matching err.c.  Compiles
- * with zero warnings under -std=c99 -Wall -Wextra and under -std=gnu99, in
- * BOTH configurations.  The local "int ret = 1, test;" is the project's own
- * assertion idiom, the one testutil.h documents; it deliberately shadows that
- * header's tentative definitions of the same names, which -Wshadow and
- * cppcheck's shadowVariable check -- neither of them part of the mandated
- * warning set -- both report.  The shadowing is the point, not an oversight:
- * every assertion macro assigns to the `test` VISIBLE AT ITS CALL SITE, which
- * is what lets each function accumulate a verdict of its own.  Suppressing it
- * by renaming would silently move the assignments to the file-scope objects
- * that testutil.h refreshes from its counters, and every "ret &= test" here
- * would then be reading a value it did not compute.
+ * The local "int ret = 1, test;" is the project's assertion idiom: every
+ * assertion macro assigns to the `test` VISIBLE AT ITS CALL SITE, which is
+ * what lets each function accumulate a verdict of its own.  Renaming it would
+ * move those assignments to the file-scope objects testutil.h refreshes from
+ * its counters, and every "ret &= test" here would then read a value it did
+ * not compute.
  *
  * Nothing here calls into libcrypto.  The core handle, the callbacks and the
  * dispatch tables all come from tests/mock_core.h, <openssl/params.h> is never
- * included, and no provider is initialised; a linked binary's only shared
- * objects are libc and the loader.
+ * included, and no provider is initialised.
  */
 
 #include "testutil.h"
 #include "mock_core.h"
 #include "prov/err.h"
 
-/*
- * Included for what this file uses directly rather than left to arrive
- * transitively: NULL and size_t from <stddef.h>, printf() and snprintf() from
- * <stdio.h>.  testutil.h happens to supply both today, and depending on that
- * would make this file's correctness hostage to another file's include list.
- */
 #include <stddef.h>
 #include <stdio.h>
 
 /*
  * A human-readable name for the variant in force, printed once by main() so a
- * `ctest -V` log says which contract the following lines belong to.  It is
- * informational only: the verdict comes from the assertion counters, never
- * from this string, and it is never the sole output of a run.
+ * `ctest -V` log says which contract the following lines belong to.
+ * Informational only: the verdict comes from the assertion counters.
  */
 #ifdef LIBPROV_TEST_NDEBUG_VARIANT
 # define GUARD_VARIANT_NAME \
@@ -194,26 +161,20 @@
  */
 #define GUARD_REASON 0x0000A5A5u
 
-/*
- * Capacity of the label buffers below.  Every label this file composes is a
- * short fixed prefix plus a short fixed suffix, so this is generous; the
- * composer truncates rather than overruns in any case.
- */
 #define GUARD_LABEL_MAX 192
 
 /*
  * Compose "<case>: <property>" into caller-owned storage and return it, so
  * that one shared checker can emit a distinct, self-describing label for every
- * value it inspects.  snprintf() always terminates and never overruns, and the
- * format string is a literal, so no caller can turn a label into a conversion
- * specification.
+ * value it inspects.  Given a nonzero capacity snprintf() truncates rather
+ * than overruns and writes a terminating null, and every caller here passes
+ * sizeof of a GUARD_LABEL_MAX array; the format string is a literal, so no
+ * caller can turn a label into a conversion specification.
  *
- * The trade-off is worth stating plainly: because the assertions live in the
- * shared checkers, a failing line carries the checker's source location rather
- * than the calling case's.  The label is what disambiguates, which is why
- * every call site passes one naming the case.  The alternative -- open-coding
- * fourteen assertions at each of five call sites -- would buy sharper line
- * numbers at the cost of seventy lines that could drift apart.
+ * The trade-off: because the assertions live in the shared checkers, a failing
+ * line carries the checker's source location rather than the calling case's.
+ * The label is what disambiguates, which is why every call site passes one
+ * naming the case.
  */
 static const char *guard_label(char *buffer, size_t capacity,
                                const char *label, const char *property)
@@ -285,22 +246,15 @@ static int guard_no_callbacks_ran(const char *label)
  * one statement drives all three forwarding functions in a fixed order:
  * proverr_new_error() (err.c:87), then proverr_set_error_debug() (err.c:93),
  * then proverr_set_error() (err.c:102).  The recorded ordinals are what make
- * that order observable.
+ * that order observable; three call counts of one could not distinguish an
+ * order.
  *
- * Fourteen assertions, each an independent claim:
- *   - one call to each of the three required callbacks, and none at all to the
- *     alternate new_error stub, which is the fixtures' marker for "a callback
- *     that must never have been resolved";
- *   - a sequence of exactly three ordinals, in the documented order, with
- *     nothing dropped, so the recorder's own bound was not reached;
- *   - the SAME core pointer arriving at all three callbacks, by identity
- *     rather than by value: err.c:57 stores the pointer and err.c:87, :93 and
- *     :102 forward it, so pass-through is the contract and identity is the
- *     only assertion that tests it;
- *   - the reason forwarded verbatim;
- *   - a NULL format pointer, because ERR_raise() supplies NULL for it
- *     (include/prov/err.h:47) where ERR_raise_data() would supply the
- *     caller's own string.
+ * The core pointer is asserted at all three callbacks by IDENTITY rather than
+ * by value, because err.c:57 stores the pointer and err.c:87, :93 and :102
+ * forward it: pass-through is the contract, and identity is the only assertion
+ * that tests it.  The alternate new_error stub is the fixtures' marker for "a
+ * callback that must never have been resolved", so its call count is asserted
+ * zero on every path.
  *
  * `handle` is const-qualified because nothing here writes through it, and that
  * costs a caller nothing: the whole public surface it is forwarded to takes a
@@ -488,14 +442,10 @@ static int guard_exercise_resolved_table(const char *label,
 }
 
 /*
- * The case both variants assert, identically.
- *
- * In the default variant it is the complete-in-order happy path that the
- * aborting shapes are contrasted against.  In the NDEBUG variant it carries
- * an extra job: proving that removing the assertions did not break the path
- * that works.  Six NULL returns would be worthless if the seventh input --
- * the valid one -- had also started returning NULL, and a suite that only
- * asserted the NULLs could not tell the two apart.
+ * The case both variants assert, identically.  In the NDEBUG variant it
+ * carries an extra job: six NULL returns would be worthless if the seventh
+ * input -- the valid one -- had also started returning NULL, and a suite that
+ * only asserted the NULLs could not tell the two apart.
  */
 static int test_common_happy_path(void)
 {
@@ -506,7 +456,6 @@ static int test_common_happy_path(void)
 #ifdef LIBPROV_TEST_NDEBUG_VARIANT
 
 /*
- * ===========================================================================
  * NDEBUG VARIANT -- the six graceful NULL returns.
  *
  * With NDEBUG defined for err.c's own translation unit, the assertions at
@@ -518,7 +467,6 @@ static int test_common_happy_path(void)
  *
  * The same six inputs abort in the default variant, so none of them may be
  * called from the #else branch of this file.
- * ===========================================================================
  */
 
 /*
@@ -634,14 +582,11 @@ static int test_ndebug_missing_vset_error(void)
 #else                           /* !LIBPROV_TEST_NDEBUG_VARIANT */
 
 /*
- * ===========================================================================
  * DEFAULT VARIANT -- the paths that do NOT abort.
  *
- * WHAT IS DELIBERATELY ABSENT FROM THIS BRANCH, AND WHERE IT LIVES INSTEAD
- *
  * Six inputs to proverr_new_handle() terminate this build with SIGABRT, and
- * none of them may be called from here -- an abort inside the test process is
- * not a failing assertion, it is a dead test runner with no verdict at all:
+ * none of them may be called from here: an abort inside the test process is
+ * not a failing assertion, it is a dead test runner with no verdict at all.
  *
  *   proverr_new_handle(NULL, table)               aborts at err.c:26
  *   proverr_new_handle(&core, NULL)               aborts at err.c:27
@@ -650,22 +595,17 @@ static int test_ndebug_missing_vset_error(void)
  *   proverr_new_handle(&core, no_set_error_debug) aborts at err.c:48
  *   proverr_new_handle(&core, no_vset_error)      aborts at err.c:49
  *
- * Both halves of that contract ARE asserted, just not here:
+ * Both halves of that contract are asserted elsewhere: that each one really
+ * does abort, with SIGABRT specifically rather than by any other kind of
+ * failure, in tests/test_err_death.c, which forks a child per case and
+ * inspects WIFSIGNALED / WTERMSIG in the parent; and that each one returns
+ * NULL instead once NDEBUG has removed the assertions, in the
+ * test_err_guards_ndebug target built from the #ifdef branch above.
  *
- *   - that each one really does abort, and with SIGABRT specifically rather
- *     than by any other kind of failure, is asserted positively by
- *     tests/test_err_death.c, which forks a child per case and inspects
- *     WIFSIGNALED / WTERMSIG in the parent;
- *   - that each one returns NULL instead, once NDEBUG has removed the
- *     assertions, is asserted by the test_err_guards_ndebug target built from
- *     the #ifdef branch above this comment.
- *
- * So the six shapes are covered twice over, from two directions, and this
- * branch is left to assert what a default build can actually observe: that a
- * table which resolves all three callbacks produces a working handle whatever
- * shape it arrives in, and that the two entry points which tolerate NULL
- * really do tolerate it.
- * ===========================================================================
+ * This branch is therefore left to assert what a default build can observe:
+ * that a table resolving all three callbacks produces a working handle
+ * whatever shape it arrives in, and that the two entry points which tolerate
+ * NULL really do.
  */
 
 /*
@@ -761,35 +701,31 @@ static int test_default_null_safe_entry_points(void)
 #endif                          /* LIBPROV_TEST_NDEBUG_VARIANT */
 
 /*
- * ===========================================================================
  * CLASS C -- GENUINE AMBIGUITY.  DELIBERATE NON-ASSERTION.  NOT A GAP.
  *
  * The observation: err.c guards its two early returns with DIFFERENT macros.
- * The first, at err.c:29-32, is wrapped in "#ifndef DEBUG".  The second, at
- * err.c:51-54, is wrapped in "#ifdef NDEBUG".  NDEBUG is the standard macro
- * that <assert.h> itself keys on.  DEBUG is a project-specific name that is
- * never defined as a preprocessor macro anywhere here: err.c:29 is the only
- * place in any C source or header that mentions it, and nothing in
- * CMakeLists.txt or cmake/ passes -DDEBUG.  (cmake/provider.cmake does use the
- * token, in MESSAGE(DEBUG ...) calls, but that is CMake's own log-level
- * keyword and has no bearing on the C preprocessor.)
+ * The first, at err.c:29-32, is wrapped in "#ifndef DEBUG"; the second, at
+ * err.c:51-54, in "#ifdef NDEBUG".  NDEBUG is the standard macro <assert.h>
+ * itself keys on.  DEBUG is a project-specific name that is never defined as a
+ * preprocessor macro anywhere here: err.c:29 is the only place in any C source
+ * or header that mentions it, and nothing in CMakeLists.txt or cmake/ passes
+ * -DDEBUG.  (cmake/provider.cmake does use the token in MESSAGE(DEBUG ...)
+ * calls, but that is CMake's own log-level keyword and has no bearing on the C
+ * preprocessor.)
  *
  * Two readings are defensible, and nothing in err.c, include/prov/err.h or the
  * project's documentation settles which was meant:
  *
- *   (a) The asymmetry is INTENTIONAL.  The two blocks answer different
- *       questions.  err.c:29-32 is a caller-error backstop that the author
- *       wanted present in ordinary builds and removable only by opting in to a
- *       project-specific DEBUG mode -- one where an abort is preferred to a
- *       silent NULL.  err.c:51-54 is a release-only safety net that exists
- *       purely to replace assertions that NDEBUG removed, so keying it to
- *       NDEBUG is precisely right.  On this reading the two macros are doing
- *       two different jobs and both spellings are correct.
- *
+ *   (a) The asymmetry is INTENTIONAL.  err.c:29-32 is a caller-error backstop
+ *       the author wanted present in ordinary builds and removable only by
+ *       opting in to a project-specific DEBUG mode, one where an abort is
+ *       preferred to a silent NULL.  err.c:51-54 is a release-only safety net
+ *       that exists purely to replace assertions NDEBUG removed, so keying it
+ *       to NDEBUG is precisely right.  Both spellings are then correct.
  *   (b) It is a TYPO.  Both blocks are recovery paths for the same class of
  *       invalid input, they sit twenty-two lines apart in the same function,
- *       and one of them says DEBUG where the other says NDEBUG.  On this
- *       reading they should agree, and the odd one out is a slip.
+ *       and one says DEBUG where the other says NDEBUG.  They should agree,
+ *       and the odd one out is a slip.
  *
  * THIS SUITE MAKES NO ASSERTION ABOUT WHICH MACRO SHOULD HAVE BEEN USED.  It
  * asserts only what each build variant makes REACHABLE, which is a question of
@@ -813,26 +749,22 @@ static int test_default_null_safe_entry_points(void)
  * Read that table carefully: err.c:29-32 is compiled IN under BOTH variants,
  * because its guard is DEBUG and DEBUG is never defined here.  What changes
  * between the variants is not whether it is present but whether it can be
- * reached.  The sloppy version of this note -- "compiled out under NDEBUG"
- * -- is the exact opposite of the truth and would mislead the next reader into
- * thinking the first two NULL returns come from somewhere else.
+ * reached.  "Compiled out under NDEBUG" is the exact opposite of the truth and
+ * would mislead the next reader into thinking the first two NULL returns come
+ * from somewhere else.
  *
  * One consequence of the asymmetry, recorded as an observation and NOT as an
- * assertion: a build that defined BOTH DEBUG and NDEBUG would remove the
+ * assertion: a build defining BOTH DEBUG and NDEBUG would remove the
  * assertions at err.c:26-27 and the block at err.c:29-32 together, leaving a
  * NULL dispatch pointer to reach err.c:34 and be dereferenced.  No target in
- * this suite is configured that way, no such build is exercised, and whether
- * that combination ought to be rejected is exactly the question reading (a)
- * and reading (b) disagree about -- so it is noted here and nowhere else.
+ * this suite is configured that way, and whether that combination ought to be
+ * rejected is exactly what readings (a) and (b) disagree about.
  *
  * DO NOT "COMPLETE" THIS by asserting whatever the code currently emits: an
  * assertion here would enshrine one reading as the contract on no authority
- * but the implementation's, which is what a deliberate non-assertion exists to
- * avoid.  DO NOT "FIX" err.c either.  Source changes are permitted only to
- * repair a genuine bug, no bug was found in err.c, and an asymmetry with a
- * defensible intentional reading is not one.  err.c is a contract source for
- * this file and is left byte-for-byte untouched.
- * ===========================================================================
+ * but the implementation's.  DO NOT "FIX" err.c either -- source changes are
+ * permitted only to repair a genuine bug, no bug was found in err.c, and an
+ * asymmetry with a defensible intentional reading is not one.
  */
 
 int main(void)
@@ -843,15 +775,10 @@ int main(void)
   /*
    * Informational only, and never the sole output of a run: it names which of
    * the two contracts the assertion lines below belong to, so a `ctest -V` log
-   * for test_err_guards and one for test_err_guards_ndebug cannot be confused
-   * for each other.  No verdict is derived from it.
+   * for one variant cannot be confused for the other.
    */
   printf("test_err_guards: variant = %s\n", GUARD_VARIANT_NAME);
 
-  /*
-   * The shared case first, in both variants, so that a run which then diverges
-   * has already established the common ground.
-   */
   ret &= test_common_happy_path();
 
 #ifdef LIBPROV_TEST_NDEBUG_VARIANT
@@ -884,4 +811,3 @@ int main(void)
 
   return status != 0 || ret != 1 ? 1 : 0;
 }
-

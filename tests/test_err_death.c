@@ -5,18 +5,16 @@
  * nothing but comments may precede it.  A feature-test macro selects which
  * declarations the C library's headers make visible, so defining it after a
  * header had already been processed would come too late to have any effect.
- * 200809L is POSIX.1-2008, the oldest revision that guarantees everything
- * used below: fork(), waitpid(), the wait-status macros and _exit().  On this
- * glibc a plain -std=c99 build happens to expose them anyway (measured); on a
- * stricter C library it would not, so this line is what makes the file
- * portable rather than merely lucky.
+ * _POSIX_C_SOURCE=200809L selects the POSIX.1-2008 feature-test level, the
+ * oldest one that guarantees everything used below: fork(), waitpid(), the
+ * wait-status macros and _exit().  A glibc host may expose them under a plain
+ * -std=c99 build regardless; a stricter C library will not, so this line is
+ * what makes the file portable rather than merely lucky.
  */
 #define _POSIX_C_SOURCE 200809L
 
 /*
- * ===========================================================================
- * test_err_death.c -- the POSITIVE assertion of err.c's assert() contract
- * ===========================================================================
+ * The POSITIVE assertion of err.c's assert() contract.
  *
  * proverr_new_handle() is guarded by five assertions: the core handle
  * (err.c:26) and the dispatch table (err.c:27) must not be NULL, and the
@@ -32,67 +30,45 @@
  * mutually exclusive under any one set of preprocessor flags, which is exactly
  * why they are two files and not two halves of one.
  *
- * NO USER-SPECIFIED RULES EXIST for this project: review_rules reports, in
- * full, "No user rules provided."  Nothing here is shaped by one and none has
- * been invented; the file is held to ordinary enterprise practice instead.
- * What does bind it is the prompt's own constraints -- assert a SPECIFIC
- * outcome rather than the mere absence of an error, never skip or weaken a
- * case, mock the OpenSSL core instead of depending on libcrypto or on a
- * running provider, and leave every non-test source untouched.  No defect was
- * found in err.c, so err.c is read here and never modified; compiling it into
- * this test target (see BUILD, below) is not a modification of it.
- *
- * ---------------------------------------------------------------------------
  * WHY A HAND-ROLLED fork()/waitpid() HARNESS AND NOT A CTest PROPERTY
- * ---------------------------------------------------------------------------
- * Please do not "simplify" this file into a CTest property.  Both plausible
- * candidates were tried against a real SIGABRT child and BOTH FAILED:
+ *
+ * Please do not "simplify" this file into a CTest property.  Neither plausible
+ * candidate works against a SIGABRT child:
  *
  *   PASS_REGULAR_EXPRESSION, matching the assertion message -- documented to
- *     pass because "the process exit code is ignored" -- FAILED, reported by
- *     CTest as "(Subprocess aborted)".
- *   WILL_FAIL TRUE -- documented to invert a failure into a pass -- FAILED,
- *     reported in exactly the same way.
+ *     pass because "the process exit code is ignored" -- still fails, reported
+ *     by CTest as "(Subprocess aborted)".
+ *   WILL_FAIL TRUE -- documented to invert a failure into a pass -- fails in
+ *     exactly the same way.
  *
- * A control (an executable returning 0, with WILL_FAIL TRUE) was correctly
- * reported as failed, which proves the property really was in effect and that
- * the negative result above was not a misconfiguration.  The documented "exit
- * code is ignored" evidently governs exit CODES and not SIGNAL terminations:
- * CTest treats an abnormally-terminated child as a hard failure either way.
+ * The documented "exit code is ignored" governs exit CODES and not SIGNAL
+ * terminations: CTest treats an abnormally-terminated child as a hard failure
+ * either way.  The harness below is therefore not a stylistic preference but
+ * the only mechanism that works, and it is strictly more precise as well,
+ * because it distinguishes "aborted FOR THE EXPECTED REASON" from "died some
+ * other way" -- a distinction neither property can express, and the difference
+ * between a test that pins err.c's contract and one that would also pass on a
+ * segfault.
  *
- * So the harness below is not a stylistic preference, it is the only mechanism
- * that works.  It is also strictly more precise, because it distinguishes
- * "aborted FOR THE EXPECTED REASON" from "died some other way" -- a
- * distinction neither property can express, and the difference between a test
- * that pins err.c's contract and one that would also pass on a segfault.
+ * HOW THIS TARGET MUST BE BUILT -- err.c COMPILED INTO IT, UNDER if(UNIX)
  *
- * ---------------------------------------------------------------------------
- * HOW THIS TARGET IS BUILT -- err.c IS COMPILED INTO IT
- * ---------------------------------------------------------------------------
- *   if(UNIX)
- *     libprov_add_test(test_err_death SOURCES test_err_death.c
- *                      ${PROJECT_SOURCE_DIR}/err.c COPTS -UNDEBUG)
- *     set_tests_properties(test_err_death PROPERTIES TIMEOUT 30)
- *   endif()
- *
- * Every part of that earns its place:
- *
- *   err.c is compiled INTO this target rather than reached through the libprov
- *     library, because NDEBUG has to be in effect for the translation unit
- *     that holds the assert() -- and libprov's err.c.o was already compiled
- *     once, with the project's own flags, so no definition on the *test*
- *     target could reach it.
- *   -UNDEBUG keeps the assertions live even in a configuration that defines
- *     NDEBUG globally, which -DCMAKE_BUILD_TYPE=Release does.  Without it a
- *     Release build would silently turn every abort into the graceful NULL of
- *     err.c:51-54, and every assertion in this file would fail.
- *   TIMEOUT 30 makes a harness defect degrade into a reported timeout instead
- *     of a hung suite.  It is a safety net and not a budget: the whole file
- *     completes in a few milliseconds.
- *   if(UNIX) means that on a host genuinely without POSIX process control this
- *     target is NOT REGISTERED AT ALL.  It is never registered-and-skipped and
- *     never allowed to fail; configuration still succeeds and every other
- *     target runs normally.
+ *   err.c must be compiled INTO this target rather than reached through the
+ *     libprov library, because the NDEBUG state that matters is the one in
+ *     effect for the translation unit holding the assert() -- and libprov's
+ *     err.c.o was already compiled once, with the project's own flags, so no
+ *     definition on the *test* target could reach it.
+ *   -UNDEBUG must apply to that compilation, so the assertions stay live even
+ *     in a configuration that defines NDEBUG globally, which
+ *     -DCMAKE_BUILD_TYPE=Release does.  Without it a Release build would turn
+ *     every abort into the graceful NULL of err.c:51-54 and every assertion in
+ *     this file would fail.
+ *   A TIMEOUT on the registered test makes a harness defect degrade into a
+ *     reported timeout instead of a hung suite.  It is a safety net, not a
+ *     budget: the whole file completes in a few milliseconds.
+ *   Registration must sit inside if(UNIX), so that on a host genuinely without
+ *     POSIX process control this target is NOT REGISTERED AT ALL.  It is never
+ *     registered-and-skipped and never allowed to fail; configuration still
+ *     succeeds and every other target runs normally.
  *
  * Nothing here links or calls libcrypto.  The core handle and the dispatch
  * tables come from tests/mock_core.h, whose OSSL_CORE_HANDLE is a test-local
@@ -100,34 +76,24 @@
  * err.c uses expand to static inline code.  <openssl/params.h>, whose
  * OSSL_PARAM_ families are libcrypto functions, is deliberately absent.
  *
- * ---------------------------------------------------------------------------
- * DEBUGGING
- * ---------------------------------------------------------------------------
- * This harness forks, so a debugger stops in the PARENT by default and the
- * abort is never seen.  Tell it to follow the child:
+ * DEBUGGING.  This harness forks, so a debugger stops in the PARENT by default
+ * and the abort is never seen.  Tell it to follow the child:
  *
  *     gdb --args ./build/tests/test_err_death
  *     (gdb) set follow-fork-mode child
  *
- * Without that a debugger sits in the parent and the interesting process runs
- * unobserved.
- *
- * ---------------------------------------------------------------------------
- * WHY THE NON-ABORTING CONTROL CASE IS MANDATORY
- * ---------------------------------------------------------------------------
- * Six cases that all expect an abort cannot tell a correct harness from one
- * that answers "aborted" unconditionally: a harness stuck at "yes" would pass
- * all six and prove nothing whatsoever.  The control feeds the harness a VALID
- * input and requires the child to exit 0 with NO signal, so both answers the
- * harness can give are exercised and a stuck harness fails immediately.  It is
- * the case that makes the other six mean something.  Do not remove it.
+ * WHY THE NON-ABORTING CONTROL CASE IS MANDATORY.  Six cases that all expect
+ * an abort cannot tell a correct harness from one that answers "aborted"
+ * unconditionally: a harness stuck at "yes" would pass all six and prove
+ * nothing.  The control feeds the harness a VALID input and requires the child
+ * to exit 0 with NO signal, so both answers the harness can give are exercised
+ * and a stuck harness fails immediately.  Do not remove it.
  */
 
 #include "testutil.h"
 #include "mock_core.h"
 #include "prov/err.h"
 
-/* ISO C headers, needed by both the POSIX body and the fallback below. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <signal.h>
@@ -252,16 +218,11 @@ static struct death_result death_run(void (*body)(void))
      * this file EXPECTS -- glibc's "Assertion `core != NULL' failed" and its
      * kin -- do not pollute the log of a passing test.
      *
-     * The freopen() result HAS to be consumed: glibc declares freopen()
-     * warn_unused_result, and GCC diagnoses a bare call under
-     * -D_FORTIFY_SOURCE=2 -O2 (measured), which the project may well be built
-     * with.  A (void) cast is not a documented remedy for that attribute, so
-     * the value is TESTED instead -- consumed by the comparison itself rather
-     * than parked in a local, which keeps cppcheck's variableScope and
-     * constVariablePointer advice satisfied as well.  Nor is the test mere
-     * ceremony: if the redirection failed, the child says so with a status of
-     * its own instead of quietly leaking assertion text into the log, and the
-     * parent reports "exited with status 97" (measured).
+     * The freopen() result has to be consumed, because glibc declares
+     * freopen() warn_unused_result.  It is TESTED rather than cast away: if
+     * the redirection failed, the child reports that with a status of its own
+     * instead of quietly leaking assertion text into the log, and the parent
+     * names it.
      */
     if (freopen("/dev/null", "w", stderr) == NULL)
       _exit(DEATH_CHILD_REDIRECT_FAILED);
@@ -282,8 +243,8 @@ static struct death_result death_run(void (*body)(void))
   /*
    * The parent.  waitpid() is retried for EINTR and for nothing else: any
    * other error means it will never succeed, and retrying regardless would
-   * spin until TIMEOUT 30 killed the suite -- a reported timeout being a far
-   * worse diagnostic than a named failure.
+   * spin until the registered timeout killed the suite -- a reported timeout
+   * being a far worse diagnostic than a named failure.
    */
   do {
     waited = waitpid(child, &status, 0);
@@ -361,9 +322,7 @@ static int exits_cleanly(void (*body)(void))
 }
 
 /*
- * ---------------------------------------------------------------------------
  * The bodies.  One aborting input each, and nothing else.
- * ---------------------------------------------------------------------------
  * Freeing the result is unreachable wherever the assertion under test is live,
  * which is the whole point of the case.  It is there so that a build in which
  * that assertion is ABSENT leaks nothing and the case still fails HONESTLY --
@@ -482,30 +441,21 @@ static void body_complete_table(void)
 
 int main(void)
 {
-  /*
-   * The project's "TEST_ASSERT(...); ret &= test;" idiom, with the accumulator
-   * named all_ok rather than ret: testutil.h:134 already defines a file-scope
-   * `ret`, which every assertion REASSIGNS from the counters and which
-   * therefore cannot accumulate, and a local called ret would shadow it
-   * (-Wshadow, measured).
-   */
   int all_ok = 1;
   int observed;
   int status;
 
   /*
    * mock_core_reset() at the start of every case, as tests/mock_core.h asks.
-   * Here it is hygiene rather than load-bearing, and deliberately so: nothing
-   * in this file asserts on mock_core_obs.  proverr_new_handle() only RESOLVES
-   * callbacks (err.c:34-45) and never invokes one, and in any case the child
-   * receives a private copy of mock_core_obs the instant it is forked, so no
-   * observation the child could record would ever reach the parent.  What the
-   * parent asserts on is how the child ended, which is all that survives.
+   * Here it is hygiene rather than load-bearing: nothing in this file asserts
+   * on mock_core_obs.  proverr_new_handle() only RESOLVES callbacks
+   * (err.c:34-45) and never invokes one, and the child receives a private copy
+   * of mock_core_obs the instant it is forked, so no observation the child
+   * could record would ever reach the parent.  What the parent asserts on is
+   * how the child ended, which is all that survives.
    *
-   * CALL, STORE, THEN ASSERT throughout, as testutil.h requires: the harness
-   * runs first and its answer is stored, and only then is the stored value
-   * compared.  It also keeps the "expected/observed" detail lines immediately
-   * above the verdict line they explain.
+   * CALL, STORE, THEN ASSERT throughout: the harness runs first and its answer
+   * is stored, and only then is the stored value compared.
    *
    * The parent itself makes no aborting call -- every one of them happens in a
    * child -- because an abort here would take the whole test process with it
@@ -514,20 +464,19 @@ int main(void)
 
   /*
    * A misconfiguration HINT, printed and not asserted.  NDEBUG being defined
-   * for this translation unit means the target was not given the -UNDEBUG that
-   * tests/CMakeLists.txt is supposed to supply (see HOW THIS TARGET IS BUILT,
-   * above); a globally-defined NDEBUG -- which -DCMAKE_BUILD_TYPE=Release
-   * supplies -- would have reached err.c as well, compiling its assertions
-   * out and leaving all six cases below asserting a contract the binary does
-   * not implement.  Measured: with err.c built -DNDEBUG all six fail and the
-   * control still passes, which is a confusing picture without this line.
+   * for this translation unit means the target was not given the -UNDEBUG this
+   * file requires (see HOW THIS TARGET MUST BE BUILT, above); a
+   * globally-defined NDEBUG -- which -DCMAKE_BUILD_TYPE=Release supplies --
+   * would reach err.c as well, compiling its assertions out and leaving all
+   * six cases below asserting a contract the binary does not implement, while
+   * the control still passes.
    *
    * It is a hint rather than an assertion on purpose.  This file can see
    * NDEBUG for itself but not for err.c's translation unit, so in the
-   * contrived case where only THIS target carries -DNDEBUG the six cases
-   * would legitimately pass; asserting here would fail a correct run.  The
-   * verdict therefore stays with the seven real cases, which fail on their own
-   * whenever the assertions are genuinely absent -- this only says why.
+   * contrived case where only THIS target carries -DNDEBUG the six cases would
+   * legitimately pass; asserting here would fail a correct run.  The verdict
+   * stays with the seven real cases, which fail on their own whenever the
+   * assertions are genuinely absent -- this only says why.
    */
 #ifdef NDEBUG
   printf("test_err_death: NOTE -- NDEBUG is defined for this translation"
@@ -536,52 +485,42 @@ int main(void)
          " SOURCES.\n");
 #endif
 
-  /* D-1  err.c:26  assert(core != NULL) */
   mock_core_reset();
   observed = aborts(body_null_core);
   TEST_ASSERT_INT_EQ("D-1 new_handle(NULL, complete) aborts with SIGABRT",
                      observed, 1);
   all_ok &= test;
 
-  /* D-2  err.c:27  assert(dispatch != NULL) */
   mock_core_reset();
   observed = aborts(body_null_dispatch);
   TEST_ASSERT_INT_EQ("D-2 new_handle(core, NULL) aborts with SIGABRT",
                      observed, 1);
   all_ok &= test;
 
-  /* D-3  err.c:47  assert(c_new_error != NULL), via an empty table */
   mock_core_reset();
   observed = aborts(body_empty_table);
   TEST_ASSERT_INT_EQ("D-3 new_handle(core, empty) aborts with SIGABRT",
                      observed, 1);
   all_ok &= test;
 
-  /* D-4  err.c:47  assert(c_new_error != NULL) */
   mock_core_reset();
   observed = aborts(body_missing_new_error);
   TEST_ASSERT_INT_EQ("D-4 new_handle(core, no new_error) aborts with SIGABRT",
                      observed, 1);
   all_ok &= test;
 
-  /* D-5  err.c:48  assert(c_set_error_debug != NULL) */
   mock_core_reset();
   observed = aborts(body_missing_set_error_debug);
   TEST_ASSERT_INT_EQ("D-5 new_handle(core, no set_error_debug) aborts with"
                      " SIGABRT", observed, 1);
   all_ok &= test;
 
-  /* D-6  err.c:49  assert(c_vset_error != NULL) */
   mock_core_reset();
   observed = aborts(body_missing_vset_error);
   TEST_ASSERT_INT_EQ("D-6 new_handle(core, no vset_error) aborts with SIGABRT",
                      observed, 1);
   all_ok &= test;
 
-  /*
-   * The control.  Without it the six cases above could all be passed by a
-   * harness that answered "aborted" unconditionally.
-   */
   mock_core_reset();
   observed = exits_cleanly(body_complete_table);
   TEST_ASSERT_INT_EQ("control new_handle(core, complete) returns a handle,"
@@ -602,12 +541,12 @@ int main(void)
 #else                           /* _WIN32 */
 
 /*
- * The non-POSIX fallback.  DEAD CODE in practice, and documented as such:
- * tests/CMakeLists.txt registers this target inside if(UNIX), so a host
- * without POSIX process control never configures it, let alone builds or runs
- * it.  Non-registration is the mechanism on purpose -- skipping a registered
- * test is precisely what this suite is forbidden to do, and a target that does
- * not exist cannot be mistaken for one that was weakened.
+ * The non-POSIX fallback.  DEAD CODE wherever the target is registered as this
+ * file requires -- inside if(UNIX) -- because a host without POSIX process
+ * control then never configures it, let alone builds or runs it.
+ * Non-registration is the mechanism on purpose: skipping a registered test is
+ * precisely what this suite is forbidden to do, and a target that does not
+ * exist cannot be mistaken for one that was weakened.
  *
  * If it is ever reached anyway it must not pretend to pass.  It asserts
  * nothing, and testutil.h's exit-status contract fails a run in which no
