@@ -50,3 +50,14 @@ modules.order
 Module.symvers
 Mkfile.old
 dkms.conf
+
+# CMake build artifacts
+build/
+CMakeCache.txt
+CMakeFiles/
+Testing/
+
+# Coverage artifacts (gcov)
+*.gcno
+*.gcda
+*.gcov
