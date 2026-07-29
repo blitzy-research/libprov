@@ -41,13 +41,12 @@
  * "the library must not do X" property, because it looks similar and is
  * structurally opposite.  param_util.h offers a poisoned payload -- the unmappable
  * PARAM_POISON_DATA address, handed out by param_build_poisoned() -- to pin that
- * num.c rejects a wrong data type, and takes the empty-source shortcut, BEFORE
- * reading the payload.  That oracle does not fork and needs no child, because
- * there a fault is the FAILURE: if num.c read the poisoned payload the numeric
- * test process itself would die and CTest would report the target as failed,
- * which is the verdict wanted.  Here a fault is the PASS, so something has to
- * outlive it in order to say so -- hence a child to die in and a parent to
- * classify the wait status.
+ * num.c takes the empty-source shortcut BEFORE reading the payload.  That oracle
+ * does not fork and needs no child, because there a fault is the FAILURE: if
+ * num.c read the poisoned payload the numeric test process itself would die and
+ * CTest would report the target as failed, which is the verdict wanted.  Here a
+ * fault is the PASS, so something has to outlive it in order to say so -- hence
+ * a child to die in and a parent to classify the wait status.
  *
  * That is why neither harness is a candidate for being folded into the other, and
  * why the numeric targets correctly carry no process-control machinery at all.
@@ -156,13 +155,13 @@
  * the target was built.  Six misleading failures are better than a false pass,
  * but a compile error naming the actual cause is better than either.
  *
- * tests/CMakeLists.txt applies the NDEBUG-undefine option it measured, so that
- * -DCMAKE_BUILD_TYPE=Release cannot delete the assertions from under this
- * target.  Where no spelling for that option could be measured the option
- * degrades to a no-op rather than a configure error, which is deliberate -- a
- * default build on such a host defines NDEBUG nowhere and works perfectly -- and
- * this check is what stops the one remaining combination, a Release-style build
- * on such a host, from producing a binary that cannot possibly pass.
+ * tests/CMakeLists.txt puts a literal -UNDEBUG on this target, so that
+ * -DCMAKE_BUILD_TYPE=Release cannot delete the assertions from under it: a
+ * target's compile options are emitted after the per-configuration flags, so the
+ * compilation reads `-O3 -DNDEBUG -UNDEBUG` and the undefine has the last word.
+ * This check is what turns the one remaining combination -- a build in which that
+ * option somehow failed to reach the compiler -- into a compile error naming the
+ * cause, instead of a binary that cannot possibly pass.
  *
  * The check reads THIS translation unit's macro state, while the assertions it
  * protects are in err.c's.  That is sound because err.c is in this target's own
@@ -178,10 +177,9 @@
 #ifdef NDEBUG
 # error "test_err_death: NDEBUG is defined. Every case in this file requires a \
 forked child to die of SIGABRT, which only err.c's assert() calls can cause, and \
-NDEBUG removes them. The NDEBUG-undefine option that tests/CMakeLists.txt \
-measures (-UNDEBUG, or /UNDEBUG) is either unsupported by this compiler or was \
-overridden. Build without -DCMAKE_BUILD_TYPE=Release, or supply the spelling this \
-compiler accepts."
+NDEBUG removes them. The -UNDEBUG option that tests/CMakeLists.txt puts on this \
+target is either not reaching the compiler or was overridden. Build without \
+-DCMAKE_BUILD_TYPE=Release, or use a compiler that accepts -UNDEBUG."
 #endif
 
 /*

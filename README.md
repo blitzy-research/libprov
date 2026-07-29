@@ -170,8 +170,8 @@ cannot support a target, that target is not registered at all.
 Where testing is enabled decides where `ctest` can find the tests, because
 `ctest` reads `CTestTestfile.cmake` from the directory it is pointed at and
 CMake writes that file only for a directory in which testing was enabled.  A
-top-level `libprov` build therefore includes CTest at the source root, which is
-what makes `ctest --test-dir build` see all of it.
+top-level `libprov` build therefore includes CTest at the source root, which
+is what makes `ctest --test-dir build` see all of it.
 
 A project that embeds `libprov` and sets `-DLIBPROV_TESTS=ON` gets a
 complete, working `ctest` tree under the directory `add_subdirectory()` put
@@ -240,42 +240,72 @@ built, and no CTest machinery is touched.
     merely failed.  It carries a 30 second timeout as a safety net, and it is
     registered only on a POSIX host.
 -   `test_err_alloc` covers the two allocator paths that no input can reach,
-    by interposing on the allocator with `-Wl,--wrap=malloc` and
-    `-Wl,--wrap=free`.  Those are exactly the entry points `err.c` uses, and
-    the two halves do different jobs.  A countdown `__wrap_malloc` fails the
-    next *N* allocations, which is what makes the two "returns `NULL` when
-    `malloc` fails" branches reachable, and proves the interposer recovers
-    afterwards.  `__wrap_free` injects nothing -- a release cannot be made to
-    fail -- and only observes: `proverr_free_handle()` returns nothing, writes
-    through nothing and calls no callback, so the allocator is the only
-    witness there is, and reducing that function to a no-op is exactly the
-    kind of one-line bug the suite has to catch.  It is caught here, as
-    counts: one call must enter `free` exactly once, release exactly one
-    block, and release **the block it was passed** and no other; a null
-    handle must reach `free` and release nothing; freeing a duplicate must
-    release the duplicate rather than its source; and every block the run
-    obtained must have been given back exactly once, which is a leak
-    assertion for the whole target.  Registered only where a configure-time
-    link probe demonstrates that the linker implements `--wrap`.
+    by interposing on the allocator with `-Wl,--wrap=malloc`.  That is the
+    only allocator entry point `err.c` calls -- `err.c:56` in
+    `proverr_new_handle()` and `err.c:71` in `proverr_dup_handle()` -- and it
+    is the only one at which a failure can be injected.  A countdown
+    `__wrap_malloc` fails the next *N* allocations, which is what makes the
+    two "returns `NULL` when `malloc` fails" branches reachable, and then
+    delegates to `__real_malloc` so the same run proves the interposer
+    recovers.  Its eight cases run from the forced failure of
+    `proverr_new_handle()`, through recovery, a forced failure of
+    `proverr_dup_handle()` with the source handle proven still usable
+    afterwards, a successful duplication proven to be a distinct object with
+    an independent lifetime, to a two-deep countdown that shows exactly one
+    decrement per intercepted allocation.  `calloc` and `realloc` are not
+    wrapped, because `err.c` never calls them.
+-   One thing no target in the suite can see is worth naming rather than
+    leaving to be discovered.  `proverr_free_handle()` returns nothing, writes
+    through nothing and calls no callback, so a body reduced to a no-op
+    satisfies every assertion in every target: `test_err_handle` pins what a
+    release must *not* do -- invoke a callback, disturb the observation state
+    -- but the release itself is unobservable.  The opt-in sanitizer
+    configuration below is the channel that closes that gap, and it was
+    measured rather than assumed: against an `err.c` whose `free(handle)` had
+    been replaced by a no-op, the default build still reports 105 assertions
+    and 0 mismatches, while the same target under
+    `-fsanitize=address,undefined` exits non-zero with
+    `ERROR: LeakSanitizer: detected memory leaks` and names 128 bytes leaked
+    in 4 allocations.
 
 ### The two platform-conditional targets
 
 Six of the eight targets are registered unconditionally.  The remaining two
 need facilities that not every host provides, so each sits behind a gate in
 `tests/CMakeLists.txt`.  Where a gate does not hold the target is **not
-registered at all**: configuration still succeeds, the other six (or seven)
-still run, and nothing is ever registered and then skipped or allowed to
-fail.
+registered at all**: configuration still succeeds, every other registered
+target still runs -- the six unconditional ones, plus the other conditional
+target where its own gate holds -- and nothing is ever registered and then
+skipped or allowed to fail.
 
 -   `test_err_death` sits behind `if(UNIX)`, and needs `fork()`,
     `waitpid()` and the wait-status macros, and `SIGABRT`.
--   `test_err_alloc` sits behind `if(LIBPROV_HAVE_LD_WRAP)`, the result of a
-    configure-time **link probe**, and needs a linker that acts on
-    `-Wl,--wrap=malloc` and `-Wl,--wrap=free`: one that redirects the calls
-    to `__wrap_malloc` and `__wrap_free` and resolves `__real_malloc` and
-    `__real_free`.
+-   `test_err_alloc` sits behind
+    `if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND UNIX AND NOT APPLE)`, and
+    needs a **GNU-compatible linker**: one that acts on `-Wl,--wrap=malloc` by
+    redirecting the call to `__wrap_malloc` and resolving `__real_malloc`.
+    Those two are separate requirements, and the gate is the first of them.
+    GCC and Clang drive a GNU-compatible linker by default on a non-Apple
+    UNIX host, and Apple's `ld64` has no `--wrap` at all, which is why that
+    platform is excluded.  The gate is therefore a **necessary** condition
+    rather than a sufficient one: a driver deliberately repointed at a linker
+    without `--wrap` will still be offered the target, and the build will then
+    fail at the link with `undefined reference to __real_malloc`.  That is the
+    intended failure mode, and it is deliberate -- a diagnostic naming the
+    exact missing capability is better than a test that silently disappears.
 
-Neither gate infers a capability from a compiler's name or a platform's.
+Both gates are declarative, and that is a deliberate choice rather than a
+shortcut.  Configure machinery is the one part of a test directory that the
+suite cannot test: a probe that answers wrongly does not fail a test, it
+silently removes one, and a removed target reports nothing at all.  A
+declarative condition is readable beside the target it guards, keeps the
+directory at the project's CMake 3.18 floor, and -- crucially -- is backed at
+build time by a mechanism that cannot fail quietly: `test_err_alloc` will not
+link without its `--wrap` option, and `tests/test_err_guards.c` and
+`tests/test_err_death.c` will not compile if `NDEBUG` reaches a target that
+must not see it.  Neither gate needs to be clever, because neither is the
+last line of defence.
+
 `test_err_death` requires only what `if(UNIX)` genuinely implies: `fork()`,
 `waitpid()` and `SIGABRT` are the harness itself, and the one facility that
 is merely *desirable* -- `setrlimit(RLIMIT_CORE)`, which stops each expected
@@ -287,57 +317,41 @@ simply writes the images again.  So a UNIX-like host without
 `<sys/resource.h>` builds and passes rather than failing to compile, which is
 the failure mode a bare platform gate could otherwise have.
 
-`test_err_alloc`'s gate is a measurement, not a guess.  `LIBPROV_HAVE_LD_WRAP`
-is set by `check_c_source_compiles()` **linking** a miniature of
-`tests/test_err_alloc.c` -- `__wrap_malloc` and `__wrap_free` defined,
-`__real_malloc` and `__real_free` referenced from their bodies -- while
-carrying the very option list the target would carry.  It is true exactly
-when this toolchain has just demonstrated the feature, and it fails the same
-way the target would: strip the options and the identical source stops at
-`undefined reference to __real_malloc`.
-
-That replaced a gate reading
-`CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND UNIX AND NOT APPLE`, which named
-three proxies for the property and measured none of them, and so could be
-wrong in both directions -- a GCC or Clang driver on a UNIX host can be
-configured to drive `lld`, `mold` or a cross-target linker, `NOT APPLE` does
-not enumerate every linker without `--wrap`, and a driver CMake does not
-classify as GNU or Clang can still drive a GNU `ld` that has it.
-
-The link options themselves are not optional for that target.  An unwrapped
-`malloc` never fails on a machine with memory to spare, and an unwrapped
-`free` is unobservable, so every assertion in the file would turn vacuous.
-The source refuses to link without them -- it references `__real_malloc` and
-`__real_free`, names only `--wrap` creates -- so a missing option is a link
-error rather than a silently passing test.
+`test_err_alloc`'s single link option is not optional.  An unwrapped `malloc`
+never fails on a machine with memory to spare, so every assertion in that
+file about a failed allocation would turn vacuous.  Nothing has to *detect*
+that, because the source cannot be built without the option: it references
+`__real_malloc`, a name only `--wrap` creates.  That was measured rather than
+assumed -- removing `-Wl,--wrap=malloc` and rebuilding stops at `undefined
+reference to __real_malloc` -- so a host whose driver has been repointed at a
+linker without `--wrap` gets a diagnostic naming the missing capability
+instead of a target that links and then observes nothing.
 
 `err.c`'s assertions have to stay live in `test_err_guards` and
 `test_err_death`, because those two targets exist to observe them and
 `-DCMAKE_BUILD_TYPE=Release` adds `-DNDEBUG` project-wide.  Undefining a
 macro from the command line is a compiler-driver convention rather than a
-C99 language feature -- POSIX spells it `-U name`, MSVC spells it `/U name`,
-and the standard says nothing about either -- so the spelling is probed,
-`-UNDEBUG` first and `/UNDEBUG` only if that fails, and the winner is
-applied.  Ordering was verified rather than assumed: a target's
-`COMPILE_OPTIONS` follow the per-configuration flags, so a Release build
-compiles those targets with `-O3 -DNDEBUG -UNDEBUG` and the undefine has the
-last word.
+C99 language feature -- POSIX spells it `-U name` and the standard says
+nothing about it -- so the two targets carry the POSIX spelling, `-UNDEBUG`,
+which both GCC and Clang accept.  Ordering was verified rather than assumed:
+a target's `COMPILE_OPTIONS` follow the per-configuration flags, so a Release
+build compiles those targets with `-O3 -DNDEBUG -UNDEBUG` and the undefine
+has the last word.
 
-Where neither spelling is accepted the option degrades to a no-op instead of
-a configure error, so such a host still gets a working default build -- and
-the hole that would otherwise open is closed in the sources rather than left
-to chance.  `tests/test_err_guards.c` requires at **compile** time that
-`NDEBUG` and `LIBPROV_TEST_NDEBUG_VARIANT` are either both defined or neither
-defined, and `tests/test_err_death.c` requires that `NDEBUG` is not defined
-at all; each stops the build with an `#error` naming the cause otherwise.
-The combination that matters is `NDEBUG` reaching the default guards target,
-because that target's own assertions would still pass while `err.c` no longer
-asserted anything -- a green test that tests nothing, which is the one
-outcome this suite exists to prevent.  It is now unbuildable.
+A driver that rejected `-UNDEBUG`, or a build that lost it, would open a hole,
+and that hole is closed in the sources rather than left to the build system.
+`tests/test_err_guards.c` requires at **compile** time that `NDEBUG` and
+`LIBPROV_TEST_NDEBUG_VARIANT` are either both defined or neither defined, and
+`tests/test_err_death.c` requires that `NDEBUG` is not defined at all; each
+stops the build with an `#error` naming the cause otherwise.  The combination
+that matters is `NDEBUG` reaching the default guards target, because that
+target's own assertions would still pass while `err.c` no longer asserted
+anything -- a green test that tests nothing, which is the one outcome this
+suite exists to prevent.  It is unbuildable rather than merely unlikely.
 
-So a POSIX host whose linker implements `--wrap` registers all eight tests,
-and all eight are registered and pass under the default build, under a
-Release build, under `--coverage` and under `-fsanitize=address,undefined`.
+So a POSIX host with a GNU-compatible linker registers all eight tests, and
+all eight pass under the default build, under a Release build, under
+`--coverage` and under `-fsanitize=address,undefined`.
 
 ### Coverage
 
@@ -363,16 +377,20 @@ assertions are live, which is one of the branches the test sources name as
 unreachable by construction.
 
 Two things about those figures are worth knowing before you read a report.
-The paths above name the objects compiled into `libprov`, which is what six
-of the eight targets link; `err.c` is *additionally* compiled into
-`test_err_guards`, `test_err_guards_ndebug` and `test_err_death` with their
-own flags, and each of those has its own `.gcno` under
-`build-cov/tests/CMakeFiles/<target>.dir/__/`.  And on the `libprov` object
-`gcov` reports the five `__assert_fail` calls as never executed -- `Calls
-executed` sits at 54.55% -- because an assertion is only ever made to fail
-in `test_err_death`, whose children die on `SIGABRT` and so flush no coverage
-data at all.  That contract is asserted by that target's exit-status check,
-not by a coverage count, which is the point of having it.
+The paths above name the objects compiled into `libprov`, and which targets
+contribute to them was measured by running each executable on its own and
+seeing which `.gcda` files appeared: `num.c`'s object is exercised by
+`test_num_get` and `test_num_set`, and `err.c`'s by `test_err_handle`,
+`test_err_raise` and `test_err_alloc`.  The remaining three compile `err.c`
+*additionally*, with their own flags, so their coverage lands elsewhere, under
+`build-cov/tests/CMakeFiles/<target>.dir/__/err.c.gcno` -- one such path for
+each of `test_err_guards`, `test_err_guards_ndebug` and `test_err_death`.
+And on the `libprov` object `gcov` reports the five `__assert_fail` calls as
+never executed -- `Calls executed` sits at 54.55% -- because an assertion is
+only ever made to fail in `test_err_death`, whose children die on `SIGABRT`
+and so flush no coverage data at all.  That contract is asserted by that
+target's exit-status check, not by a coverage count, which is the point of
+having it.
 
 The third figure `gcov -b` prints, *taken at least once*, is the one worth
 reading closely, and it is lower than the other two by design rather than by
@@ -394,7 +412,8 @@ host can take**:
     both sides, so the mismatch fallthrough is unsatisfiable through the
     public API; reaching it would need a change to `num.c`.
 -   **The assertion-fires arms** -- `err.c:26`, `:27`, `:47`, `:48`, `:49`,
-    plus both arms of the `err.c:30` guard they dominate.  An assertion is
+    plus the true arm of each half of the `err.c:30` guard they dominate,
+    which is also why `err.c:31` is the one unexecuted line.  An assertion is
     only ever *made* to fail in `test_err_death`, whose children die on
     `SIGABRT` and therefore flush no coverage data, so that contract is
     asserted by an exit status rather than counted here.  This is the same
@@ -428,34 +447,46 @@ and the test sources name it for exactly that reason.  The division is worth
 stating precisely, because it is narrower than it once was:
 
 -   **Reading a payload it had no business reading** is caught by the
-    default suite, not here.  The fixtures that must not be read hand
+    default suite, not here.  The one fixture that must not be read hands
     `num.c` an address in memory no mapping covers, so a read that must not
     happen ends the test on a signal rather than quietly returning a
-    neighbouring byte.  Reverting the type gate in `paramsign()`, or either
-    half of its pre-validation guard, fails `test_num_get` under the
-    command above with no instrumentation at all.  What this tree adds is
-    the diagnosis: the same revert reports `SEGV ... in paramsign num.c:27`
-    with a stack trace instead of only a signal number.
--   **`num.c`'s zero-capacity clamp** is caught by the default suite too,
-    and less firmly.  Reverting it makes `provnum_set_*` answer `1` where
-    `-2` is owed, which the existing assertions do detect -- measured on 200
-    runs of 200, at every optimisation level tried -- but only because a
-    byte inside the library function's own stack frame happens to say so,
-    and no fixture can control that byte.  Here it is unconditional:
+    neighbouring byte.  Removing either half of the pre-validation guard at
+    `num.c:19-20` -- or the guard entirely -- ends `test_num_get` on
+    `SIGSEGV` under the command above with no instrumentation at all; all
+    three variants were built and run to confirm it.  What this tree adds is
+    the diagnosis: the same removals name `paramsign` at `num.c:27`, and the
+    caller above it, instead of reporting only a signal number.
+-   **`num.c`'s zero-capacity clamp** is caught by the default suite too, and
+    what catches it is specific: reverting the clamp makes `provnum_set_*`
+    answer `1` where `-2` is owed, and `test_num_set` reports
+    `set_size_t(0) -> zero-capacity UNSIGNED destination, D2: actual 1,
+    expected -2` -- one of four mismatches under the mandated build.  That was
+    measured, not assumed: the reverted library was detected on **200 runs out
+    of 200**, and at `-O0`, `-O1`, `-O2`, `-O3` and `-Os` as well as at the
+    mandated build's own flags.  What is *not* guaranteed is which assertions
+    fire: the count varied between one and four across those levels, because
+    detection rests on a byte inside the library function's own stack frame
+    that no fixture can control.  Here it is unconditional:
     AddressSanitizer's per-variable stack redzones report the revert as a
-    `stack-buffer-underflow` at `num.c:94 in provnum_copy` whatever that
-    byte would have said.
--   **Whether `proverr_free_handle()` releases anything at all** is caught by
-    the default suite, and this tree only adds diagnosis.  `test_err_alloc`
-    wraps `free` as well as `malloc`, so reducing that function to a no-op --
-    or making it let go of the wrong block, or of the same block twice --
-    fails that target under the command above, reported as a release count
-    that does not reconcile.  What this tree adds is the allocation site: the
-    same no-op also makes LeakSanitizer name where the leaked handle was
-    allocated, in five of the eight targets.
+    `stack-buffer-underflow` at `num.c:94 in provnum_copy` whatever that byte
+    would have said.
+-   **Whether `proverr_free_handle()` releases anything at all** is *not*
+    caught by the default suite, and this tree is where it is caught.  Only
+    `malloc` is wrapped, so a release is unobservable to `test_err_alloc`;
+    reducing that function to a no-op leaves the default build reporting 105
+    assertions and 0 mismatches.  Both halves of that claim were measured
+    against a modified copy of `err.c`: the default build passes, while the
+    same target configured as above exits non-zero with `ERROR:
+    LeakSanitizer: detected memory leaks` and names 128 bytes leaked in 4
+    allocations, at the allocation site inside `proverr_new_handle`.  This is
+    the one property in the suite for which the opt-in tree is the primary
+    oracle rather than a second opinion, which is why it is stated here, in
+    `tests/test_err_alloc.c` and in `tests/test_err_handle.c` rather than
+    left for a reader to discover.
 
-Each of those was measured, and each is re-checked by the mutation
-spot-checks the test sources describe.
+All three were measured against a modified copy of the library rather than
+reasoned about, and the test sources name the same spot-checks beside the
+assertions that carry them.
 
 ### Build artifacts
 
@@ -521,13 +552,15 @@ suite.
 -   A C99 compiler.  GCC 13 is the reference the suite is verified with.
     Every test source is standard C99; the two facilities that are not part
     of the language -- a command-line option that undefines a macro, and a
-    linker that implements `--wrap` -- are probed at configure time rather
-    than assumed, and the paragraphs above say what happens on a host that
-    lacks either.
+    linker that implements `--wrap` -- are named directly rather than probed
+    at configure time, and each is backed where it can be checked without
+    guessing: the sources refuse to **compile** if `NDEBUG` reaches them, and
+    the allocator target refuses to **link** without its `--wrap` option.
+    The paragraphs above say what happens on a host that lacks either.
 -   CMake and CTest.  The project's own configure floor is the 3.18 that
-    `cmake_minimum_required()` declares, and the test wiring stays under it:
-    the newest thing `tests/CMakeLists.txt` uses is
-    `CMAKE_REQUIRED_LINK_OPTIONS`, at 3.14.  The `ctest --test-dir`
+    `cmake_minimum_required()` declares, and the test wiring stays well under
+    it: the newest thing `tests/CMakeLists.txt` uses is
+    `target_link_options`, at 3.13.  The `ctest --test-dir`
     invocations documented above need 3.20 or later, and `--output-junit`
     needs 3.21 or later.  3.23.3 is the reference the suite is verified with.
 -   An OpenSSL 3.0 or later development installation that CMake can
@@ -557,10 +590,11 @@ suite.
     the corresponding target and configures, builds and runs everything else
     cleanly.
 -   Optionally, for a **Release-style** build only, a compiler that accepts
-    `-UNDEBUG` or `/UNDEBUG`.  `test_err_guards` and `test_err_death` need
-    `err.c`'s assertions to survive the `-DNDEBUG` that
-    `-DCMAKE_BUILD_TYPE=Release` adds project-wide, and one of those two
-    spellings is how that is done.  A default build defines `NDEBUG` nowhere
-    and needs neither, so on a host that accepts neither the default build is
-    unaffected and only a Release-style build is refused -- at compile time,
-    by the sources' own pins, with a diagnostic naming the cause.
+    `-UNDEBUG`.  `test_err_guards` and `test_err_death` need `err.c`'s
+    assertions to survive the `-DNDEBUG` that `-DCMAKE_BUILD_TYPE=Release`
+    adds project-wide, and that option is how it is done; GCC and Clang both
+    accept it, and it is the spelling POSIX gives for `c99`.  A default build
+    defines `NDEBUG` nowhere and needs it for nothing, so on a driver that
+    rejected it the default build is unaffected and only a Release-style
+    build is refused -- at compile time, by the sources' own pins, with a
+    diagnostic naming the cause.

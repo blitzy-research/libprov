@@ -1004,14 +1004,24 @@ static int test_err_raise_macro(void)
      on literal storage at all.  A cross-occurrence claim -- this function's
      OPENSSL_FILE capture against the expansion inside the macro -- is NOT
      available, because two occurrences of __FILE__ are two string literals and
-     C99 6.4.5p6 leaves their distinctness unspecified per occurrence.  What IS
-     guaranteed is that ONE occurrence is ONE literal, hence one array with one
-     address, however the implementation stores it.  So the loop below drives a
-     SINGLE ERR_raise() occurrence twice and requires the two forwarded
-     addresses to agree.  A copying implementation fails it: err.c frees
-     nothing between raises, so two copies land at two addresses.  Reason 46u
-     is used here and nowhere else, so a failure names this block
-     unambiguously in the log. */
+     C99 6.4.5p6 leaves their distinctness unspecified per occurrence.  It is
+     declined DESPITE holding here: the cross-occurrence comparison was
+     measured on this toolchain at -O0, -O3, --coverage,
+     -fsanitize=address,undefined and even -fno-merge-constants, and the two
+     addresses agreed every time.  Asserting it would therefore pass here while
+     encoding something the standard does not promise, so the sound claim is
+     made instead and nothing is lost: the copying implementation that a
+     cross-occurrence identity check would catch is caught below, and the two
+     DIRECT calls at "set_error_debug: file pointer identity" and
+     "...: func pointer identity" already pin pass-through over objects this
+     file owns -- both were confirmed to fail against an err.c that forwards a
+     strdup()ed copy.  What the standard DOES guarantee is that ONE occurrence
+     is ONE literal, hence one array with one address, however the
+     implementation stores it.  So the loop below drives a SINGLE ERR_raise()
+     occurrence twice and requires the two forwarded addresses to agree.  A
+     copying implementation fails it: err.c frees nothing between raises, so
+     two copies land at two addresses.  Reason 46u is used here and nowhere
+     else, so a failure names this block unambiguously in the log. */
   {
     const char *seen_file[2];
     const char *seen_func[2];

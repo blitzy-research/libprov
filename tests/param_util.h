@@ -24,7 +24,9 @@
  * One fixture withholds its payload instead of supplying one:
  * param_build_poisoned() hands over an address that cannot be read, so a
  * payload the library was never entitled to touch becomes a trap rather than
- * a silence.
+ * a silence.  It is for the empty-source shortcut only -- see the note above
+ * PARAM_POISON_DATA for why a wrong-type fixture must NOT withhold a payload
+ * it has declared.
  *
  * ALIASING IS A GUARANTEE HERE: param_put_msb_first(buf, n, buf, n) and
  * param_snapshot(&p, &p) are reachable calls, so every helper answers the same
@@ -559,11 +561,22 @@ static PARAMUTIL_MAYBE_UNUSED int param_build_empty(OSSL_PARAM *param,
  * to read, which makes "the library did not read the payload" unobservable:
  * an implementation that reads a byte it had no business reading returns the
  * same answer as one that never looked.  A poisoned payload turns that
- * silence into a signal.  Two contracts in num.c are exactly of that shape --
- * a wrong data type must be REJECTED before the payload is consulted, and a
- * declared size of zero must take the empty-source shortcut before the
- * payload is consulted -- and each is pinned by handing the function a
- * descriptor whose data pointer cannot survive being dereferenced.
+ * silence into a signal.  ONE contract in num.c is of that shape: a declared
+ * size of zero must take the empty-source shortcut before the payload is
+ * consulted, and it is pinned by handing the function a descriptor whose data
+ * pointer cannot survive being dereferenced.
+ *
+ * WHAT THIS FIXTURE IS NOT FOR.  It must NOT be used for a wrong-type case.
+ * paramsign() reads the sign byte of every source that is not
+ * OSSL_PARAM_UNSIGNED_INTEGER (num.c:25-27), and for a descriptor that
+ * declares a non-zero size over a non-null buffer that read is inside the
+ * bounds the CALLER promised, so it is num.c's to make.  The three sanctioned
+ * repairs to num.c close the two shapes where the read would be outside an
+ * object -- a null payload and a declared size of zero, both answered by the
+ * guard at num.c:19-20 -- and nothing beyond them.  A poisoned wrong-type
+ * fixture would therefore fail against correct code, which is the one thing an
+ * oracle here must never do.  Wrong-type rejection is asserted as a return
+ * code, over readable payloads, in test_num_get.c.
  *
  * Why address 1 cannot be read: a hosted POSIX implementation reserves the
  * lowest addresses and never maps them (on Linux the floor is
@@ -580,9 +593,9 @@ static PARAMUTIL_MAYBE_UNUSED int param_build_empty(OSSL_PARAM *param,
  * pointer is implementation-defined, not undefined (C99 6.3.2.3p5), and the
  * suite only ever stores the result in a descriptor and compares it.  It is
  * never dereferenced here, and correct library code never dereferences it
- * either -- both contracts above answer before the payload is reached.  The
- * only way this pointer is followed is a library that violates one of them,
- * which is precisely the defect being detected.  param_snapshot() and
+ * either -- the contract above answers before the payload is reached.  The
+ * only way this pointer is followed is a library that violates it, which is
+ * precisely the defect being detected.  param_snapshot() and
  * param_identical() stay usable, reading the DESCRIPTOR and not the payload.
  *
  * The honest limit: this is a trap, not a proof.  On a hypothetical host that
@@ -597,14 +610,17 @@ static PARAMUTIL_MAYBE_UNUSED int param_build_empty(OSSL_PARAM *param,
 
 /*
  * A parameter whose declared size is the caller's but whose payload is
- * unreadable.  data_type stays a parameter because both interesting shapes
- * need it: a non-integer type with a non-zero size pins wrong-type rejection
- * ahead of any payload read, and OSSL_PARAM_INTEGER with a size of zero pins
- * the empty-source shortcut ahead of any payload read.  Prefer this over
- * param_build_null_data() wherever the question is "was the payload read?"
- * rather than "was a null payload rejected?": a null pointer is also the
- * value num.c's own guard tests, so a null-data fixture cannot separate a
- * guard that returns early from one that merely happens not to fault.
+ * unreadable.  The shape it exists for is OSSL_PARAM_INTEGER with a size of
+ * zero, which pins the empty-source shortcut ahead of any payload read;
+ * data_type stays a parameter rather than being hardcoded only so the caller
+ * names the type it means at the call site.  Do NOT pass a non-integer type
+ * with a non-zero size: num.c is entitled to read that payload, so such a
+ * fixture would fault on correct code -- the note above PARAM_POISON_DATA
+ * gives the full reasoning.  Prefer this over param_build_null_data() wherever
+ * the question is "was the payload read?" rather than "was a null payload
+ * rejected?": a null pointer is also the value num.c's own guard tests, so a
+ * null-data fixture cannot separate a guard that returns early from one that
+ * merely happens not to fault.
  */
 static PARAMUTIL_MAYBE_UNUSED void
 param_build_poisoned(OSSL_PARAM *param, unsigned int data_type,

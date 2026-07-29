@@ -17,44 +17,39 @@
  * pins what they return.  It repairs nothing: no defect was found in err.c,
  * and modifying a non-test source without a genuine defect is forbidden.
  *
- * malloc AND free ARE WRAPPED; calloc AND realloc ARE NOT.  The link options
- * this target carries are "-Wl,--wrap=malloc" and "-Wl,--wrap=free", which are
- * exactly the allocator entry points err.c uses: malloc at err.c:56 and
- * err.c:71, free at err.c:82.  calloc and realloc err.c never calls, so
- * wrapping either would interpose on nothing.  free earns its option because
- * err.c:82 is the entire body of proverr_free_handle(), a function that returns
- * nothing, writes through nothing and calls no callback: no caller can observe
- * it, so only the ALLOCATOR can, and a body deleted outright would otherwise
- * satisfy every assertion in the suite.  Cases A-9 and A-10 make that channel
- * into assertions -- the block released must be the block passed, exactly one
- * release must happen, and a null handle must reach free and release nothing --
- * A-7 arms the same identity check around the release of a duplicate, and the
- * balance line at the end of main() requires every block obtained to have been
- * given back.  The full reasoning, including why the determinism objection to
- * wrapping free does not hold, is under WHY free IS WRAPPED TOO below.
+ * ONLY malloc IS WRAPPED.  The single link option this target carries is
+ * "-Wl,--wrap=malloc", and malloc is the only allocator entry point err.c
+ * calls: err.c:56 in proverr_new_handle() and err.c:71 in proverr_dup_handle().
+ * calloc and realloc err.c never calls, so wrapping either would interpose on
+ * nothing.  free is not wrapped either, for two reasons: a release cannot be
+ * made to FAIL, so wrapping it would inject no fault and serve no part of this
+ * file's purpose; and the frozen specification fixes this target's link option
+ * at --wrap=malloc and its case list at A-1 through A-8.  Both are honoured
+ * literally.  What that leaves unobserved is stated plainly under WHAT THIS
+ * FILE CANNOT SEE below rather than papered over.
  *
  * HOW THIS TARGET IS BUILT.  The test registration links the libprov LIBRARY
- * and adds the two link options above; it does NOT compile a private copy of
+ * and adds the one link option above; it does NOT compile a private copy of
  * err.c.  That works because --wrap operates at LINK time on undefined
- * references: err.c.o inside libprov.a refers to `malloc` and `free`, so the
- * linker rewrites those references -- err.c:56, err.c:71 and err.c:82 included
- * -- to the wrappers below without err.c being recompiled or even aware.
- * --wrap is a GNU-ld facility, so tests/CMakeLists.txt registers this target
- * only after a configure-time link probe has DEMONSTRATED that the active
- * linker implements it for both symbols; on a host where the probe fails the
- * target is NOT REGISTERED, rather than registered and skipped or registered
- * and allowed to fail, so configuration still succeeds and every other target
- * runs normally.
+ * references: err.c.o inside libprov.a refers to `malloc`, so the linker
+ * rewrites that reference -- err.c:56 and err.c:71 included -- to the wrapper
+ * below without err.c being recompiled or even aware.  --wrap is a GNU-ld
+ * extension, so tests/CMakeLists.txt registers this target only where the
+ * toolchain carries it: a GNU or Clang driver on a UNIX host that is not Apple.
+ * Elsewhere the target is NOT REGISTERED, rather than registered and skipped or
+ * registered and allowed to fail, so configuration still succeeds and every
+ * other target runs normally.
  *
- * THE LINK OPTIONS CANNOT GO MISSING UNNOTICED, which matters because every
- * assertion here would turn vacuous if they did -- an unwrapped malloc never
+ * THE LINK OPTION CANNOT GO MISSING UNNOTICED, which matters because every
+ * assertion here would turn vacuous if it did -- an unwrapped malloc never
  * fails on a machine with memory to spare, so each "returns NULL" would simply
- * stop being true and each "succeeds" would pass for no reason, and an
- * unwrapped free would leave every release counter at zero.  It cannot happen:
- * __real_malloc and __real_free are names only the linker's --wrap creates and
- * this file references both, so a build without either option fails to LINK
- * with an undefined reference rather than producing a binary that quietly
- * proves nothing.
+ * stop being true and each "succeeds" would pass for no reason.  It cannot
+ * happen: __real_malloc is a name only the linker's --wrap creates and this
+ * file references it, so a build without the option fails to LINK with an
+ * undefined reference rather than producing a binary that quietly proves
+ * nothing.  That is also the backstop behind the declarative registration gate:
+ * a driver repointed at a linker without --wrap fails loudly at the link, naming
+ * the missing capability, instead of silently dropping a test.
  *
  * NO ABORTING INPUT LIVES HERE.  This target must be built with the project's
  * DEFAULT flags, which leaves the five assert() calls in err.c live: err.c:26
@@ -72,15 +67,12 @@
  * countdown rather than a boolean because a case has to be able to say "fail
  * exactly the next one" and then observe that the next-but-one succeeded,
  * which is what separates a real out-of-memory return from an interposer that
- * got stuck.  __wrap_free() needs no countdown -- a release cannot be made to
- * fail and there is nothing to inject -- so it is a pure observer: it counts,
- * judges the identity of the block against whatever a case has armed, and
- * delegates.  The countdown, the armed expectation, every counter and every
- * helper of both wrappers have internal linkage and stay in THIS translation
- * unit: allocator interposition perturbs a whole process, so promoting any of
- * it into tests/testutil.h or tests/mock_core.h would silently change how every
- * sibling target allocates.  Confining it to one executable is what keeps the
- * suite safe under `ctest -j N`.
+ * got stuck.  The countdown, every counter and every helper have internal
+ * linkage and stay in THIS translation unit: allocator interposition perturbs a
+ * whole process, so promoting any of it into tests/testutil.h or
+ * tests/mock_core.h would silently change how every sibling target allocates.
+ * Confining it to one executable is what keeps the suite safe under
+ * `ctest -j N`.
  *
  * <stdlib.h> IS MANDATORY, not stylistic.  With an interposer in the picture,
  * an implicit declaration of malloc collides with the compiler's built-in and
@@ -164,81 +156,43 @@
  * them by symbol name and a static definition would leave the rewritten
  * references unresolved.
  *
- * WHY free IS WRAPPED TOO, AND WHY calloc AND realloc ARE NOT.  err.c calls
- * exactly three allocator entry points: malloc at err.c:56 and err.c:71, and
- * free at err.c:82.  calloc and realloc it never calls, so wrapping either
- * would interpose on nothing and would be scope creep.  free is a different
- * matter, because err.c:82 is the whole body of proverr_free_handle() and that
- * function returns nothing, writes through nothing and calls no callback: its
- * effect is invisible from any test translation unit, and a body deleted
- * outright would satisfy every assertion that does not have the ALLOCATOR as
- * its witness.  Reducing err.c:82 to a no-op is exactly the kind of plausible
- * single-edit bug the suite exists to catch, so the observation channel that
- * can see it is not optional: link-time interposition on free is the only
- * mechanism that observes a release positively, and cases A-9 and A-10 below
- * are what turn that channel into assertions.
+ * WHY ONLY malloc IS WRAPPED.  err.c reaches the allocator at three places:
+ * malloc at err.c:56 and err.c:71, and free at err.c:82.  calloc and realloc it
+ * never calls, so wrapping either would interpose on nothing and would be scope
+ * creep.  malloc is wrapped because a FAILURE can be injected there and an
+ * out-of-memory return is otherwise unreachable from any input.  free is not,
+ * because a release cannot be made to fail: an interposer on it would inject
+ * nothing and would belong to a different mechanism serving a different purpose
+ * from this file's.  The frozen specification fixes this target's link option at
+ * -Wl,--wrap=malloc and this file's case list at A-1 through A-8, and both are
+ * honoured literally.  A second --wrap option must not be added here: the case
+ * list would then no longer match the wiring, and widening a frozen
+ * specification is not a decision that belongs in a test file.
  *
- * THE DETERMINISM OBJECTION, MEASURED RATHER THAN ASSUMED.  Wrapping free was
- * once avoided here on the grounds that it would put this interposer in the
- * path of every deallocation the process makes, stdio's own included, which
- * would indeed be the one thing able to make an allocation-failure test
- * non-deterministic.  That reasoning does not survive contact with how --wrap
- * works: the linker rewrites references only inside the objects being linked --
- * this file and the err.c.o inside libprov.a -- and libc's own internal frees
- * (the stdio buffer's, and whatever the exit-time cleanup releases) live inside
- * libc.so, which is not relinked and whose calls are therefore not rewritten.
- * `nm -u` over the objects that make up this target shows `free` referenced by
- * exactly ONE of them, err.c.o.  So the interposer sees err.c:82 and nothing
- * else, which the counters at the end of main() then prove as a value: the
- * number of interceptions reconciles exactly with the handles the cases build.
- * The same argument is what makes the malloc side exact, and it was measured
- * the same way: 8 interceptions in a run, which is precisely the number of
- * malloc calls err.c makes here and not one stdio allocation more.
+ * WHAT THIS FILE CANNOT SEE, STATED RATHER THAN HIDDEN.  err.c:82 is the whole
+ * body of proverr_free_handle(), and that function returns nothing, writes
+ * through nothing and calls no callback.  Its effect is therefore invisible from
+ * any test translation unit in this suite, and a body reduced to a no-op would
+ * satisfy every assertion in every target.  That is an honest gap in the suite's
+ * mutation coverage and it is recorded here so a reader finds it stated instead
+ * of having to deduce it from an absence.  The opt-in
+ * -fsanitize=address,undefined configuration documented in README.md is the
+ * channel that closes it: LeakSanitizer reports the handle this file allocated
+ * and never got back, with the allocation site's stack trace.  Every case below
+ * frees every handle it obtains, so that configuration has a clean baseline to
+ * judge against.
  *
- * ON THE SPECIFICATION.  The plan for this file fixes the target's link option
- * at -Wl,--wrap=malloc, while the same plan's acceptance criterion -- the one
- * the whole suite is engineered against -- is that a plausible bug introduced
- * into the library must fail at least one test.  Those two cannot both be
- * satisfied literally, since a no-op free is such a bug and malloc-only wiring
- * cannot see it.  The higher requirement wins, and it is satisfied without
- * touching anything else the plan freezes: the option set of this ONE existing
- * target grows by -Wl,--wrap=free, the suite still registers exactly eight
- * targets, no target carries an instrumentation flag by default, and no other
- * file's allocation behaviour changes.
- *
- * WHAT THE OTHER CASES ESTABLISH, AND WHAT THEY DO NOT.  Case A-5 requires the
- * duplicate to be a distinct object from its source and case A-7 requires the
- * source to keep working after the duplicate has been freed.  Together they
- * rule out a proverr_free_handle() that released the SOURCE when it was handed
- * the copy, and any release that left the source unusable.  What they cannot
- * see on their own is a release that does nothing at all, or one that lets go
- * of some unrelated block, because neither disturbs the source.  A-9 covers
- * both directly -- the block released must be the block passed, and exactly
- * one release must happen -- A-10 pins the free(NULL) path at the allocator
- * rather than merely surviving it, A-7 now arms the same identity check around
- * the release of the copy, and the balance line at the end of main() requires
- * every block this executable obtained to have been given back.  The opt-in
- * -fsanitize=address,undefined configuration documented in README.md remains
- * valuable, but it is now supplementary: it diagnoses a leak with a stack
- * trace rather than being the only thing that notices one.
+ * WHAT THE CASES DO ESTABLISH ABOUT RELEASE.  Case A-5 requires the duplicate to
+ * be a distinct object from its source, and case A-7 requires the source to keep
+ * answering correctly after the duplicate has been freed.  Together they rule
+ * out a proverr_free_handle() that released the SOURCE when it was handed the
+ * copy, and any release that left the source unusable -- both behaviourally,
+ * through a subsequent raise, without needing to observe the allocator.  What
+ * they cannot see is a release that does nothing at all, which is the gap named
+ * above.
  */
 void *__real_malloc(size_t size);
 void *__wrap_malloc(size_t size);
-
-/*
- * Supplied by the linker in response to "-Wl,--wrap=free", the second and last
- * symbol this target wraps, and declared here for the same reasons and with
- * the same care as the malloc pair above: the exact signature of the function
- * it stands in for, external linkage on both, and the wrapper declared before
- * it is defined so the definition is checked against a prototype.
- *
- * Neither option can go missing unnoticed.  __real_malloc and __real_free are
- * names only --wrap creates, and this file references both, so a build that
- * lost either option fails to LINK rather than producing a binary whose
- * assertions quietly prove nothing.
- */
-void __real_free(void *block);
-void __wrap_free(void *block);
 
 /*
  * How many of the next allocations to fail.  Zero -- the initial state, and
@@ -272,77 +226,24 @@ static unsigned long alloc_supplied = 0;
 
 /*
  * ---------------------------------------------------------------------------
- * IDENTITY AND LIFETIME: NO POINTER IS EVER RETAINED ACROSS A FREE
+ * NO POINTER IS EVER EVALUATED AFTER THE OBJECT IT DESIGNATES IS RELEASED
  * ---------------------------------------------------------------------------
  * Once free() has returned, the VALUE of every pointer that referred to the
  * released space is indeterminate (C99 7.20.3p1, and 6.2.4p2 for the object
- * whose lifetime has ended), so a later `released == handle_address` is not a
+ * whose lifetime has ended), so a later `saved == handle_address` is not a
  * question with a defined answer even though neither operand is dereferenced
  * and even though both were copied out while the object was still alive.
  * Copying an address early does not extend the lifetime of the thing it
  * designates.
  *
- * That rule is what dictates the SHAPE of the release oracle below, and it is
- * worth being precise about, because the obvious design is the undefined one.
- * "Remember the address, free it, then check that the address the wrapper saw
- * matches" reads naturally and is exactly what must not be written.  Instead:
- *
- *   ARM  a case publishes the address of a block that is unambiguously ALIVE
- *        (it was handed back by the interposer moments earlier and nothing has
- *        released it) into free_expected.
- *   JUDGE __wrap_free() compares its argument with free_expected BEFORE it
- *        calls __real_free(), so both operands designate a live object at the
- *        moment of comparison -- the only point at which C gives the question
- *        an answer -- and records the verdict as a COUNTER.  It then clears
- *        free_expected, so that when __real_free() returns not one variable in
- *        this file holds the address of the object whose lifetime just ended.
- *   ASSERT the case reads counters.  Never a pointer.
- *
- * Clearing free_expected is an assignment, which does not read the old value,
- * so it stays defined whichever way the case went: the wrapper cleared it if
- * the release happened, and a case's own disarm clears it if the release did
- * not happen (which is itself the mutation A-9 is there to catch).
- *
- * The only pointer comparisons this file makes are therefore that one inside
- * the wrapper and case A-5's `copy != source`, both evaluated while BOTH
- * operands are alive.  Everything else asserted here is a comparison of
- * counters that stay meaningful for as long as the program runs.
+ * Every case below is written to that rule.  The only pointer comparison in the
+ * file is case A-5's `copy != source`, and it is evaluated while BOTH operands
+ * are alive -- before either handle is freed -- precisely so that the answer is
+ * defined.  A-6 and A-7 then act on the result of that live comparison rather
+ * than re-deriving it later.  Everything else asserted here is a return value, a
+ * counter, or a spy observation, all of which stay meaningful for as long as the
+ * program runs.
  */
-
-/*
- * The armed expectation: the block a case has published as the one the next
- * release must let go of.  NULL means "no case is watching", which is the
- * initial state and the state every case is left in.  Read and written only by
- * the three helpers below and by __wrap_free().
- */
-static void *free_expected = NULL;
-
-/*
- * Every entry into the free interposer, and how each ended.
- *
- *   free_intercepted  every entry, NULL argument included.  err.c:82 frees
- *                     unconditionally, so this counts CALLS and is what proves
- *                     the call happened at all.
- *   free_of_null      entries whose argument was NULL.  free(NULL) is defined
- *                     to do nothing (C99 7.20.3.2), so these are calls that
- *                     correctly release nothing rather than calls that failed
- *                     to release something.
- *   free_released     entries with a non-NULL argument that were delegated to
- *                     __real_free.  This is the count of actual RELEASES, and
- *                     the one a no-op proverr_free_handle() cannot produce.
- *   free_matched      non-NULL entries that arrived while a case was watching
- *                     and whose argument WAS the armed block.
- *   free_unexpected   non-NULL entries that arrived while a case was watching
- *                     and whose argument was NOT the armed block.  Separated
- *                     from free_matched rather than folded into it so that
- *                     "released the wrong block" names itself in the log
- *                     instead of showing up only as a missing match.
- */
-static unsigned long free_intercepted = 0;
-static unsigned long free_of_null = 0;
-static unsigned long free_released = 0;
-static unsigned long free_matched = 0;
-static unsigned long free_unexpected = 0;
 
 void *__wrap_malloc(size_t size)
 {
@@ -361,99 +262,6 @@ void *__wrap_malloc(size_t size)
     alloc_supplied++;
 
   return block;
-}
-
-/*
- * The release interposer.  Every branch is taken before __real_free() is
- * called, for the lifetime reason set out above: after that call the argument's
- * value is indeterminate and nothing here may look at it again.
- *
- * The NULL case is recorded and still delegated rather than returned early.
- * Delegating keeps the wrapper a faithful stand-in for free() -- __real_free
- * IS free under another name, and free(NULL) is required to do nothing -- and
- * it keeps free_intercepted a count of CALLS, which is what lets case A-10
- * assert that err.c:82 really does hand a NULL straight to the allocator
- * instead of guarding it or, worse, not calling free at all.
- */
-void __wrap_free(void *block)
-{
-  free_intercepted++;
-
-  if (block == NULL) {
-    free_of_null++;
-    __real_free(block);
-    return;
-  }
-
-  /*
-   * The identity verdict, computed while both operands still designate a live
-   * object.  free_expected is cleared on a match so that no variable in this
-   * file holds the address of the block once __real_free() below has ended its
-   * lifetime.  A mismatch deliberately LEAVES the expectation armed: the case
-   * then reports both facts -- an unexpected block was released and the block
-   * it was watching was not -- and the end-of-run balance line reports the
-   * block that was never given back.
-   */
-  if (free_expected != NULL) {
-    if (block == free_expected) {
-      free_matched++;
-      free_expected = NULL;
-    } else {
-      free_unexpected++;
-    }
-  }
-
-  free_released++;
-  __real_free(block);
-}
-
-/*
- * Publish `block` as the block the next release must let go of.  Call
- * IMMEDIATELY before the call under test, on a block that is alive, with
- * nothing that could allocate or free in between.
- */
-static void free_expect_block(void *block)
-{
-  free_expected = block;
-}
-
-/*
- * Whether an armed expectation is still outstanding, as a COUNT and not as the
- * pointer itself, so that a case can assert "the release I was watching for
- * happened" without reading a pointer whose object may since have gone.  Read
- * BEFORE the disarm below.
- */
-static unsigned long free_expectation_pending(void)
-{
-  return free_expected == NULL ? 0UL : 1UL;
-}
-
-/*
- * Stop watching.  An assignment, never a read, so it is defined whether or not
- * the armed block has already been released -- see the lifetime note above.
- * Called at the end of every armed window so no leftover expectation can reach
- * a later case in this executable.
- */
-static void free_forget_expectation(void)
-{
-  free_expected = NULL;
-}
-
-/*
- * Blocks obtained from the interposer but not yet given back to it.  Signed for
- * the same reason as alloc_supplied_total(): a NEGATIVE value -- more releases
- * than allocations, which is what a double free through this target's own
- * handles would produce -- names the fault directly instead of wrapping an
- * unsigned counter round to a large positive number.
- *
- * The figure is exact for this executable because the interposer sees every
- * allocation and every release that the linked objects make, and only those:
- * see the determinism note at the head of the file.  Zero at the end of main()
- * therefore means precisely "every block err.c took, err.c gave back".
- */
-static long alloc_outstanding(void)
-{
-  return (long)alloc_supplied - (long)free_released;
 }
 
 /*
@@ -868,10 +676,6 @@ static int test_dup_handle_alloc_failure(void)
   unsigned long intercepted_before;
   unsigned long forced_before;
   unsigned long pending_after;
-  unsigned long matched_before;
-  unsigned long unexpected_before;
-  unsigned long released_before;
-  unsigned long pending_after_free;
   long supplied_before;
   int ok = 1;
 
@@ -1055,41 +859,18 @@ static int test_dup_handle_alloc_failure(void)
      * storage -- and if it were not, this raise would be reading freed memory,
      * which is why the case is worth its lines.  A third distinct reason.
      *
-     * The identity expectation is armed around this release as well, so the
-     * claim is not merely "the source still works afterwards" but "the block
-     * released was the COPY".  A proverr_free_handle() that let go of the
-     * source when handed the copy is the mutation this arming kills outright,
-     * and it kills it by counter: a mismatch is recorded inside the interposer
-     * while both blocks are still alive, so nothing here compares a pointer
-     * after a lifetime has ended.  A-9 owns the general release contract; this
-     * is the aliasing-specific corner of it.
+     * What is asserted is behavioural, because that is all this target's wiring
+     * can see: the release itself is unobservable here (see the note at the head
+     * of the file), so the claim is "the source still answers correctly once the
+     * copy is freed", not "the block released was the copy".  The distinctness
+     * A-5 established while both handles were alive is what makes the claim
+     * meaningful, and the enclosing guard is what keeps it defined: against a
+     * library that aliased the two, this branch is never entered at all and A-5
+     * has already recorded the mismatch.
      */
-    matched_before = free_matched;
-    unexpected_before = free_unexpected;
-    released_before = free_released;
-
     fflush(stdout);
 
-    free_expect_block(copy);
     proverr_free_handle(copy);
-    pending_after_free = free_expectation_pending();
-    free_forget_expectation();
-
-    TEST_ASSERT_UINT_EQ("A-7 freeing the copy released exactly one block",
-                        free_released - released_before, 1UL);
-    ok &= test;
-
-    TEST_ASSERT_UINT_EQ("A-7 the block released was the copy",
-                        free_matched - matched_before, 1UL);
-    ok &= test;
-
-    TEST_ASSERT_UINT_EQ("A-7 the source was not the block released",
-                        free_unexpected - unexpected_before, 0UL);
-    ok &= test;
-
-    TEST_ASSERT_UINT_EQ("A-7 the armed expectation was consumed",
-                        pending_after_free, 0UL);
-    ok &= test;
 
     mock_core_reset();
     fflush(stdout);
@@ -1222,166 +1003,6 @@ static int test_countdown_precision(void)
   return ok;
 }
 
-/*
- * A-9 and A-10: the POSITIVE release contract of proverr_free_handle().
- *
- * err.c:80-83 is `void proverr_free_handle(struct proverr_functions_st *handle)
- * { free(handle); }` and that is the entire function.  It returns nothing,
- * writes through nothing and calls no callback, so every claim about what it
- * DID is invisible from a test translation unit -- which is why the two cases
- * here do not look at the library at all after the call, they look at what the
- * allocator saw.  What each rules out is worth naming, because the point of the
- * case is the mutation it kills and not the line it covers:
- *
- *   free_released delta == 1     kills a body reduced to a no-op, the single
- *                                most plausible edit to a one-line function,
- *                                and one that every other target in the suite
- *                                passes.
- *   free_matched  delta == 1     kills a release of some other block: the block
- *                                given back must be the block passed in.  The
- *                                comparison happens inside the interposer while
- *                                both operands are still alive; see the
- *                                lifetime note at the head of the file.
- *   free_unexpected delta == 0   states the same fact from the other side, so
- *                                a wrong-block release names itself.
- *   free_intercepted delta == 1  kills a body that frees twice, and kills one
- *                                that calls free through some path the linker
- *                                did not rewrite.
- *   zero callbacks               the negative side-effect invariant: releasing
- *                                a handle must not raise anything.
- *   A-10                         pins the free(NULL) path AT THE ALLOCATOR --
- *                                one call, zero releases -- rather than merely
- *                                surviving it.  err.c:82 frees
- *                                unconditionally and C99 7.20.3.2 requires
- *                                free(NULL) to do nothing, so "the call was
- *                                made and released nothing" is the contract,
- *                                and a guard added in front of it would show up
- *                                here as a missing call.
- *
- * Nothing in either case reads a pointer after a release, and neither arms the
- * malloc countdown: both build their handle with the allocator in pass-through,
- * because what is under test is the release and not the acquisition.
- */
-static int test_free_handle_release(void)
-{
-  struct proverr_functions_st *handle;
-  unsigned long intercepted_before;
-  unsigned long released_before;
-  unsigned long matched_before;
-  unsigned long unexpected_before;
-  unsigned long of_null_before;
-  unsigned long pending_after;
-  long supplied_before;
-  int ok = 1;
-
-  /*
-   * A-9.  A live handle first, asserted rather than assumed: the whole case is
-   * about what happens to THIS block, so a silent NULL would make every
-   * assertion below meaningless rather than failing.
-   */
-  mock_core_reset();
-
-  fflush(stdout);
-
-  supplied_before = alloc_supplied_total();
-  handle = proverr_new_handle(&mock_core_primary, mock_dispatch_complete);
-
-  TEST_ASSERT_PTR_NOT_NULL("A-9 handle to be released", handle);
-  ok &= test;
-
-  if (handle == NULL)
-    return 0;
-
-  /*
-   * And it really came from the interposer, so the release assertions below are
-   * about a block this file's counters know about.  Without this line a handle
-   * obtained some other way would make the balance arithmetic unsound.
-   */
-  TEST_ASSERT_INT_EQ("A-9 the handle came from exactly one new block",
-                     alloc_supplied_total(), supplied_before + 1L);
-  ok &= test;
-
-  ok &= assert_no_callbacks("A-9 building the handle");
-
-  mock_core_reset();
-
-  fflush(stdout);
-
-  intercepted_before = free_intercepted;
-  released_before = free_released;
-  matched_before = free_matched;
-  unexpected_before = free_unexpected;
-
-  /*
-   * Arm, call, then read.  The arming names the block that must be given back;
-   * the interposer judges the identity while the block is still alive and
-   * records the verdict as a counter, and the expectation is read before it is
-   * cleared so that "the release I was watching for happened" is itself an
-   * assertion rather than an inference.
-   */
-  free_expect_block(handle);
-  proverr_free_handle(handle);
-  pending_after = free_expectation_pending();
-  free_forget_expectation();
-
-  TEST_ASSERT_UINT_EQ("A-9 proverr_free_handle() called free exactly once",
-                      free_intercepted - intercepted_before, 1UL);
-  ok &= test;
-
-  TEST_ASSERT_UINT_EQ("A-9 exactly one block was released",
-                      free_released - released_before, 1UL);
-  ok &= test;
-
-  TEST_ASSERT_UINT_EQ("A-9 the block released was the block passed in",
-                      free_matched - matched_before, 1UL);
-  ok &= test;
-
-  TEST_ASSERT_UINT_EQ("A-9 no other block was released",
-                      free_unexpected - unexpected_before, 0UL);
-  ok &= test;
-
-  TEST_ASSERT_UINT_EQ("A-9 the armed expectation was consumed", pending_after,
-                      0UL);
-  ok &= test;
-
-  ok &= assert_no_callbacks("A-9");
-
-  /*
-   * A-10.  free(NULL) at err.c:82, observed rather than survived.  The
-   * expectation is deliberately NOT armed: there is no block to name, and an
-   * armed NULL would mean "not watching" anyway, which is precisely why the
-   * interposer treats NULL as a case of its own instead of as an identity
-   * question.
-   */
-  mock_core_reset();
-
-  fflush(stdout);
-
-  intercepted_before = free_intercepted;
-  released_before = free_released;
-  of_null_before = free_of_null;
-
-  proverr_free_handle(NULL);
-
-  TEST_ASSERT_UINT_EQ("A-10 a null handle still reaches free exactly once",
-                      free_intercepted - intercepted_before, 1UL);
-  ok &= test;
-
-  TEST_ASSERT_UINT_EQ("A-10 the null free was seen as a null free",
-                      free_of_null - of_null_before, 1UL);
-  ok &= test;
-
-  TEST_ASSERT_UINT_EQ("A-10 a null handle released nothing",
-                      free_released - released_before, 0UL);
-  ok &= test;
-
-  ok &= assert_no_callbacks("A-10");
-
-  fflush(stdout);
-
-  return ok;
-}
-
 
 int main(void)
 {
@@ -1397,13 +1018,12 @@ int main(void)
    * test is; see the "arm late, disarm early" note at the top of the file.
    */
   printf("test_err_alloc: err.c allocator contract -- malloc at err.c:56 and"
-         " err.c:71, free at err.c:82\n");
+         " err.c:71\n");
   fflush(stdout);
 
   cases &= test_new_handle_alloc_failure();
   cases &= test_dup_handle_alloc_failure();
   cases &= test_countdown_precision();
-  cases &= test_free_handle_release();
 
   /*
    * The engagement diagnostic.  Deliberately a "greater than zero" and never a
@@ -1421,21 +1041,7 @@ int main(void)
   printf("interposer totals: %lu allocations intercepted, %lu forced to fail,"
          " %lu blocks supplied\n", alloc_intercepted, alloc_forced,
          alloc_supplied);
-  printf("interposer totals: %lu frees intercepted, %lu of them null,"
-         " %lu blocks released, %lu identity matches, %lu unexpected\n",
-         free_intercepted, free_of_null, free_released, free_matched,
-         free_unexpected);
   TEST_ASSERT(alloc_intercepted > 0UL);
-  cases &= test;
-
-  /*
-   * The free side of the same engagement diagnostic, and the same reasoning: a
-   * "greater than zero" so that a linker which honoured --wrap=malloc but not
-   * --wrap=free -- or a proverr_free_handle() that stopped calling free
-   * entirely -- is diagnosed by one unmistakable line rather than inferred from
-   * a balance that happens not to reconcile.
-   */
-  TEST_ASSERT(free_intercepted > 0UL);
   cases &= test;
 
   /*
@@ -1456,18 +1062,6 @@ int main(void)
   cases &= test;
 
   /*
-   * And no case is still watching for a release.  Same hygiene rule as the line
-   * above, asserted as a value for the same reason: every free_expect_block()
-   * in this file is matched by a free_forget_expectation(), and a leftover
-   * expectation would silently attribute the next case's release to the wrong
-   * block.  A pending expectation here also means the block it named was never
-   * given back, which the balance line below reports independently.
-   */
-  TEST_ASSERT_UINT_EQ("no release expectation was left armed",
-                      free_expectation_pending(), 0UL);
-  cases &= test;
-
-  /*
    * The whole-executable reconciliation.  Every interception must be accounted
    * for exactly once: either the countdown forced it to fail, or the real
    * allocator supplied a block.  Stated that way the line carries a real
@@ -1478,38 +1072,18 @@ int main(void)
    * event during the run would make every per-case attribution above unsound,
    * and that must be reported rather than absorbed.
    *
-   * RELEASE IS ASSERTED, and so is the absence of a leak -- see the balance
-   * line immediately below.  Because free is wrapped as well, this file sees
-   * every release the linked objects make, so "every block obtained was given
-   * back" is a value this executable can state rather than a property left to a
-   * separate configuration.  What the opt-in -fsanitize=address,undefined
-   * configuration documented in README.md still adds is diagnosis: it names the
-   * allocation site of a leak with a stack trace, where the line below reports a
-   * count.  See WHY free IS WRAPPED TOO at the top of this file.
+   * RELEASE IS NOT ASSERTED HERE, and the omission is deliberate rather than an
+   * oversight.  Only malloc is wrapped, so this file cannot see a release at all
+   * and therefore cannot state "every block obtained was given back" as a value.
+   * Every case below nevertheless frees every handle it obtains, and the opt-in
+   * -fsanitize=address,undefined configuration documented in README.md is the
+   * channel that turns that discipline into a verdict, naming the allocation
+   * site of any leak with a stack trace.  See the note at the head of this file.
    */
   TEST_ASSERT_INT_EQ("every interception either supplied a block or was forced"
                      " to fail",
                      alloc_supplied_total() + (long)alloc_forced,
                      (long)alloc_intercepted);
-  cases &= test;
-
-  /*
-   * The lifetime reconciliation, and the assertion that makes a leak anywhere in
-   * this executable a failure of it.  Every block the interposer handed back
-   * must have come back to the interposer exactly once, so the outstanding count
-   * has to be exactly zero: a positive value is a handle this file obtained and
-   * never released, or a proverr_free_handle() that released nothing; a negative
-   * value is more releases than allocations, which is what a double free through
-   * these handles would look like.  Both are named by the value the line prints.
-   *
-   * This is a whole-executable claim and deliberately not a per-case one:
-   * per-case deltas are where A-7, A-9 and A-10 pin exactly which block was
-   * released and when, while this line closes the file as a whole so that a new
-   * case cannot be added later that quietly leaks.
-   */
-  TEST_ASSERT_INT_EQ("every block obtained from the interposer was released"
-                     " exactly once",
-                     alloc_outstanding(), 0L);
   cases &= test;
 
   /*

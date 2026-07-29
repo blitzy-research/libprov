@@ -182,17 +182,17 @@
  * path through tests/CMakeLists.txt does.
  *
  * This is the second of the two layers that keep the pinning honest.  The first
- * is tests/CMakeLists.txt applying the measured NDEBUG-undefine option; this
+ * is the literal -UNDEBUG that tests/CMakeLists.txt puts on this target; this
  * one is what makes the absence of that option a compile error instead of a
  * green test that tests nothing.
  */
 #if defined(NDEBUG) && !defined(LIBPROV_TEST_NDEBUG_VARIANT)
 # error "test_err_guards: NDEBUG is defined but LIBPROV_TEST_NDEBUG_VARIANT is not. \
 The default variant asserts that err.c's assertions FIRE, so it must be compiled \
-with NDEBUG undefined. Either the NDEBUG-undefine option that tests/CMakeLists.txt \
-measures (-UNDEBUG, or /UNDEBUG) is not supported by this compiler, or something \
-defined NDEBUG after it. Build without -DCMAKE_BUILD_TYPE=Release, or supply the \
-spelling this compiler accepts."
+with NDEBUG undefined. Either the -UNDEBUG option that tests/CMakeLists.txt puts \
+on this target is not reaching the compiler, or something defined NDEBUG after \
+it. Build without -DCMAKE_BUILD_TYPE=Release, or use a compiler that accepts \
+-UNDEBUG."
 #endif
 #if defined(LIBPROV_TEST_NDEBUG_VARIANT) && !defined(NDEBUG)
 # error "test_err_guards: LIBPROV_TEST_NDEBUG_VARIANT is defined but NDEBUG is not. \

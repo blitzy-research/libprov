@@ -625,34 +625,28 @@ static int test_dup_handle(void)
  * The delta alone would be satisfied if both sides were zero, which is exactly
  * what a free that also reset the observation state would produce.
  *
- * WHAT THIS CASE CANNOT REACH, AND WHICH TARGET DOES.  Everything asserted here
- * is about what proverr_free_handle() must NOT do.  The positive fact -- that it
- * releases the block, that it releases exactly the block it was given, and that
- * it releases it exactly once -- is invisible from this translation unit: the
- * function returns nothing, writes through nothing and calls no stub, so a body
- * deleted outright would satisfy every assertion below.  Observing a release
- * positively needs the ALLOCATOR to be the witness, which needs link-time
- * interposition on free(), which no ordinary target can have.
+ * WHAT THIS CASE CANNOT REACH, AND WHERE THAT GAP IS RECORDED.  Everything
+ * asserted here is about what proverr_free_handle() must NOT do.  The positive
+ * fact -- that it releases the block, that it releases exactly the block it was
+ * given, and that it releases it exactly once -- is invisible from this
+ * translation unit: the function returns nothing, writes through nothing and
+ * calls no stub, so a body deleted outright would satisfy every assertion below.
+ * Observing a release positively would need the ALLOCATOR as the witness, which
+ * would need link-time interposition on free().
  *
- * tests/test_err_alloc.c is the target that has it.  It links with
- * -Wl,--wrap=free as well as -Wl,--wrap=malloc, and its case A-9 asserts, as
- * exact counts, that one call to proverr_free_handle() entered free exactly
- * once, released exactly one block, and released THE BLOCK IT WAS PASSED and no
- * other; its case A-10 asserts that a null handle still reaches free and
- * releases nothing; its case A-7 arms the same identity check around the
- * release of a duplicate, so a release that let go of the source when handed the
- * copy is named rather than inferred; and its final balance line requires every
- * block that executable obtained to have been given back exactly once, which is
- * a leak assertion for the whole file.  So the no-op mutation this case cannot
- * see does fail the mandatory suite -- it fails test_err_alloc -- and the
- * division of labour is exact rather than a gap: what is asserted HERE is that a
- * release invokes no callback and disturbs no observation state, which is a
- * claim about err.c:80-83's silence that the allocator cannot make.
+ * No target in this suite has that.  tests/test_err_alloc.c is the only target
+ * that interposes on the allocator at all, and it wraps malloc ONLY -- the one
+ * entry point at which a failure can be injected, which is the contract that
+ * file exists for.  So a proverr_free_handle() reduced to a no-op is a mutation
+ * the mandatory suite does not catch.  That is an honest gap, stated here and in
+ * tests/test_err_alloc.c rather than left for a reader to infer from an absence.
  *
- * The opt-in -fsanitize=address,undefined configuration documented in README.md
- * remains useful and is no longer load-bearing for this property: it reports the
- * same regression with an allocation-site stack trace, where test_err_alloc
- * reports it as a count.
+ * What IS asserted here is the complementary claim, and it is one the allocator
+ * could not make either: that a release invokes no callback and disturbs no
+ * observation state, which is a claim about err.c:80-83's silence.  The opt-in
+ * -fsanitize=address,undefined configuration documented in README.md is the
+ * channel that closes the remaining half, reporting a leaked handle with the
+ * allocation site's stack trace.
  */
 static int test_free_handle(void)
 {

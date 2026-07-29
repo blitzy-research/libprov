@@ -20,9 +20,9 @@ static sign_t paramsign(const OSSL_PARAM *param)
         return POSITIVE;
 
     size_t srcmsb = nativeendian() == BIG ? 0 : param->data_size - 1;
-    /* Same defect: {(void *)1,OCTET_STRING,4} SEGVd where -1 was owed. */
+
     return
-        param->data_type != OSSL_PARAM_INTEGER
+        param->data_type == OSSL_PARAM_UNSIGNED_INTEGER
         ? POSITIVE
         : (((unsigned char *)param->data)[srcmsb] & 0x80
            ? NEGATIVE
@@ -114,7 +114,7 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
         && (dest.data_type == OSSL_PARAM_INTEGER || src.sign == POSITIVE)) {
 
         if (src.size < dest.size) {
-            /* 12-byte set_int(&p,5) overran; 1-byte 0xFF get_int: -16776961 */
+            /* 12-byte set_int(&p,5) OOB; 9-byte all-0xFF get_int: -16776961 */
             size_t padstart = dest.endian == BIG ? 0 : src.size;
 
             memset((unsigned char *)dest.data + padstart, src.sign,
