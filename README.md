@@ -239,68 +239,105 @@ built, and no CTest machinery is touched.
     the child to have died of `SIGABRT` specifically rather than to have
     merely failed.  It carries a 30 second timeout as a safety net, and it is
     registered only on a POSIX host.
--   `test_err_alloc` covers the out-of-memory paths, which no input can
-    reach, by wrapping the allocator with `-Wl,--wrap=malloc`.  `free` is
-    deliberately left unwrapped, so this target interposes on exactly one
-    function and nothing in stdio is disturbed -- interposing on every
-    deallocation the process makes is the one thing that could make an
-    allocation-failure test non-deterministic.  What that leaves out is worth
-    knowing precisely: the suite requires a duplicate to be a distinct object
-    and the source handle to outlive a freed copy, which rules out a release
-    that let go of the source, but **no target run by the command above
-    observes a release positively** -- reduce `proverr_free_handle()` to a
-    no-op and all eight still pass.  That property is covered by the
-    sanitizer configuration described further down, where the allocator is
-    the witness by construction and the same change raises leak reports in
-    five of the eight targets.  Registered only where the toolchain supplies
-    GNU-`ld`-style `--wrap`.
+-   `test_err_alloc` covers the two allocator paths that no input can reach,
+    by interposing on the allocator with `-Wl,--wrap=malloc` and
+    `-Wl,--wrap=free`.  Those are exactly the entry points `err.c` uses, and
+    the two halves do different jobs.  A countdown `__wrap_malloc` fails the
+    next *N* allocations, which is what makes the two "returns `NULL` when
+    `malloc` fails" branches reachable, and proves the interposer recovers
+    afterwards.  `__wrap_free` injects nothing -- a release cannot be made to
+    fail -- and only observes: `proverr_free_handle()` returns nothing, writes
+    through nothing and calls no callback, so the allocator is the only
+    witness there is, and reducing that function to a no-op is exactly the
+    kind of one-line bug the suite has to catch.  It is caught here, as
+    counts: one call must enter `free` exactly once, release exactly one
+    block, and release **the block it was passed** and no other; a null
+    handle must reach `free` and release nothing; freeing a duplicate must
+    release the duplicate rather than its source; and every block the run
+    obtained must have been given back exactly once, which is a leak
+    assertion for the whole target.  Registered only where a configure-time
+    link probe demonstrates that the linker implements `--wrap`.
 
 ### The two platform-conditional targets
 
-Six of the eight targets are registered unconditionally and need nothing
-beyond standard C99.  The remaining two need interfaces that not every host
-provides, so each sits behind a gate in `tests/CMakeLists.txt`.  Where a
-gate does not hold the target is **not registered at all**: configuration
-still succeeds, the other six (or seven) still run, and nothing is ever
-registered and then skipped or allowed to fail.
+Six of the eight targets are registered unconditionally.  The remaining two
+need facilities that not every host provides, so each sits behind a gate in
+`tests/CMakeLists.txt`.  Where a gate does not hold the target is **not
+registered at all**: configuration still succeeds, the other six (or seven)
+still run, and nothing is ever registered and then skipped or allowed to
+fail.
 
 -   `test_err_death` sits behind `if(UNIX)`, and needs `fork()`,
     `waitpid()` and the wait-status macros, and `SIGABRT`.
--   `test_err_alloc` sits behind
-    `if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND UNIX AND NOT APPLE)`,
-    and needs a linker that acts on `-Wl,--wrap=malloc`: one that creates
-    `__wrap_malloc` and resolves `__real_malloc`.
+-   `test_err_alloc` sits behind `if(LIBPROV_HAVE_LD_WRAP)`, the result of a
+    configure-time **link probe**, and needs a linker that acts on
+    `-Wl,--wrap=malloc` and `-Wl,--wrap=free`: one that redirects the calls
+    to `__wrap_malloc` and `__wrap_free` and resolves `__real_malloc` and
+    `__real_free`.
 
-A gate is a coarser instrument than a per-interface probe, and the sources
-are written so that nothing finer is needed.  `test_err_death` requires only
-what `if(UNIX)` genuinely implies: `fork()`, `waitpid()` and `SIGABRT` are
-the harness itself, and the one facility that is merely *desirable* --
-`setrlimit(RLIMIT_CORE)`, which stops each expected abort from leaving a
-core image -- is picked up through `__has_include(<sys/resource.h>)` and
-compiled out where it is unavailable.  That was measured both ways: with the
-header the target leaves no core file behind, and with the block compiled
-out it still passes every assertion and simply writes the images again.  So
-a UNIX-like host without `<sys/resource.h>` builds and passes rather than
-failing to compile, which is the failure mode a bare platform gate could
-otherwise have.
+Neither gate infers a capability from a compiler's name or a platform's.
+`test_err_death` requires only what `if(UNIX)` genuinely implies: `fork()`,
+`waitpid()` and `SIGABRT` are the harness itself, and the one facility that
+is merely *desirable* -- `setrlimit(RLIMIT_CORE)`, which stops each expected
+abort from leaving a core image -- is picked up through
+`__has_include(<sys/resource.h>)` and compiled out where it is unavailable.
+That was measured both ways: with the header the target leaves no core file
+behind, and with the block compiled out it still passes every assertion and
+simply writes the images again.  So a UNIX-like host without
+`<sys/resource.h>` builds and passes rather than failing to compile, which is
+the failure mode a bare platform gate could otherwise have.
 
-`test_err_alloc`'s gate names the compiler driver and the platform because
-`--wrap` is a GNU-`ld` facility and Apple's linker does not provide it.  The
-link option is not optional for that target: an unwrapped `malloc` never
-fails on a machine with memory to spare, so every "returns `NULL`"
-assertion would turn vacuous.  The source therefore refuses to link without
-it -- it references `__real_malloc`, a name only `--wrap` creates -- so a
-missing option is a link error rather than a silently passing test.
+`test_err_alloc`'s gate is a measurement, not a guess.  `LIBPROV_HAVE_LD_WRAP`
+is set by `check_c_source_compiles()` **linking** a miniature of
+`tests/test_err_alloc.c` -- `__wrap_malloc` and `__wrap_free` defined,
+`__real_malloc` and `__real_free` referenced from their bodies -- while
+carrying the very option list the target would carry.  It is true exactly
+when this toolchain has just demonstrated the feature, and it fails the same
+way the target would: strip the options and the identical source stops at
+`undefined reference to __real_malloc`.
 
-`-UNDEBUG` is applied to `test_err_guards` and `test_err_death` literally
-and unconditionally.  It is what keeps `err.c`'s assertions live even under
-`-DCMAKE_BUILD_TYPE=Release`, which adds `-DNDEBUG` project-wide; making it
-conditional would trade a compile-time diagnostic on a hypothetical host for
-a silent hole on a real one.
+That replaced a gate reading
+`CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND UNIX AND NOT APPLE`, which named
+three proxies for the property and measured none of them, and so could be
+wrong in both directions -- a GCC or Clang driver on a UNIX host can be
+configured to drive `lld`, `mold` or a cross-target linker, `NOT APPLE` does
+not enumerate every linker without `--wrap`, and a driver CMake does not
+classify as GNU or Clang can still drive a GNU `ld` that has it.
 
-So a POSIX host with GNU-`ld`-style `--wrap` registers all eight tests, and
-all eight are registered and pass under the default build, under a Release
-build, under `--coverage` and under `-fsanitize=address,undefined`.
+The link options themselves are not optional for that target.  An unwrapped
+`malloc` never fails on a machine with memory to spare, and an unwrapped
+`free` is unobservable, so every assertion in the file would turn vacuous.
+The source refuses to link without them -- it references `__real_malloc` and
+`__real_free`, names only `--wrap` creates -- so a missing option is a link
+error rather than a silently passing test.
+
+`err.c`'s assertions have to stay live in `test_err_guards` and
+`test_err_death`, because those two targets exist to observe them and
+`-DCMAKE_BUILD_TYPE=Release` adds `-DNDEBUG` project-wide.  Undefining a
+macro from the command line is a compiler-driver convention rather than a
+C99 language feature -- POSIX spells it `-U name`, MSVC spells it `/U name`,
+and the standard says nothing about either -- so the spelling is probed,
+`-UNDEBUG` first and `/UNDEBUG` only if that fails, and the winner is
+applied.  Ordering was verified rather than assumed: a target's
+`COMPILE_OPTIONS` follow the per-configuration flags, so a Release build
+compiles those targets with `-O3 -DNDEBUG -UNDEBUG` and the undefine has the
+last word.
+
+Where neither spelling is accepted the option degrades to a no-op instead of
+a configure error, so such a host still gets a working default build -- and
+the hole that would otherwise open is closed in the sources rather than left
+to chance.  `tests/test_err_guards.c` requires at **compile** time that
+`NDEBUG` and `LIBPROV_TEST_NDEBUG_VARIANT` are either both defined or neither
+defined, and `tests/test_err_death.c` requires that `NDEBUG` is not defined
+at all; each stops the build with an `#error` naming the cause otherwise.
+The combination that matters is `NDEBUG` reaching the default guards target,
+because that target's own assertions would still pass while `err.c` no longer
+asserted anything -- a green test that tests nothing, which is the one
+outcome this suite exists to prevent.  It is now unbuildable.
+
+So a POSIX host whose linker implements `--wrap` registers all eight tests,
+and all eight are registered and pass under the default build, under a
+Release build, under `--coverage` and under `-fsanitize=address,undefined`.
 
 ### Coverage
 
@@ -337,12 +374,38 @@ in `test_err_death`, whose children die on `SIGABRT` and so flush no coverage
 data at all.  That contract is asserted by that target's exit-status check,
 not by a coverage count, which is the point of having it.
 
+The third figure `gcov -b` prints, *taken at least once*, is the one worth
+reading closely, and it is lower than the other two by design rather than by
+omission: about 83% for `num.c` and about 73% for `err.c` on the reference
+toolchain.  Those are 10 of `num.c`'s 58 branches and 7 of `err.c`'s 26 never
+taken, and every one of the 17 falls into a class that **no test on a single
+host can take**:
+
+-   **The big-endian arms** -- `num.c:13`, `:22`, `:76`, `:77`, `:118`,
+    `:124`, `:125`.  All four `numdesc` instantiations set `endian` from
+    `nativeendian()`, so `endian == BIG` holds only on a big-endian host and
+    the arm is dead on a little-endian one (and vice versa).  This is a
+    property of the *host*, not of the suite: the fixtures compute every
+    byte-level expectation from the host's own order, so the same assertions
+    exercise the other arm, and would catch a defect in it, when run on a
+    big-endian machine.
+-   **The descriptor-mismatch arms** -- `num.c:111`, `:112`, `:113`.  The
+    same instantiations hardcode `limbsize` to 1 and `limbnailbits` to 0 on
+    both sides, so the mismatch fallthrough is unsatisfiable through the
+    public API; reaching it would need a change to `num.c`.
+-   **The assertion-fires arms** -- `err.c:26`, `:27`, `:47`, `:48`, `:49`,
+    plus both arms of the `err.c:30` guard they dominate.  An assertion is
+    only ever *made* to fail in `test_err_death`, whose children die on
+    `SIGABRT` and therefore flush no coverage data, so that contract is
+    asserted by an exit status rather than counted here.  This is the same
+    effect as the `Calls executed` figure described above.
+
 No percentage is set as a target.  What the suite aims at instead is every
-reachable branch, and the branches that are unreachable by construction are
-named, with the reason each is unreachable, in the test sources.  There is
-no HTML report step: `lcov`, `genhtml` and `gcovr` are not assumed to be
-present, and nothing documented here depends on tooling that may not be
-installed.
+reachable branch, with the reason for each unreachable one recorded -- above
+for the three host- and construction-conditional classes, and in the test
+sources for the error codes the setters cannot return.  There is no HTML
+report step: `lcov`, `genhtml` and `gcovr` are not assumed to be present, and
+nothing documented here depends on tooling that may not be installed.
 
 ### Sanitizers
 
@@ -382,10 +445,14 @@ stating precisely, because it is narrower than it once was:
     AddressSanitizer's per-variable stack redzones report the revert as a
     `stack-buffer-underflow` at `num.c:94 in provnum_copy` whatever that
     byte would have said.
--   **Whether `proverr_free_handle()` releases anything at all** is the one
-    property the default suite genuinely cannot see, and this is where it is
-    covered.  Reduce that function to a no-op and all eight targets still
-    pass above; in this tree LeakSanitizer reports leaks in five of them.
+-   **Whether `proverr_free_handle()` releases anything at all** is caught by
+    the default suite, and this tree only adds diagnosis.  `test_err_alloc`
+    wraps `free` as well as `malloc`, so reducing that function to a no-op --
+    or making it let go of the wrong block, or of the same block twice --
+    fails that target under the command above, reported as a release count
+    that does not reconcile.  What this tree adds is the allocation site: the
+    same no-op also makes LeakSanitizer name where the leaked handle was
+    allocated, in five of the eight targets.
 
 Each of those was measured, and each is re-checked by the mutation
 spot-checks the test sources describe.
@@ -413,20 +480,56 @@ relative path against the build directory, so the invocation above writes
 `build/results.xml`, which the `build/` pattern already covers; point it
 somewhere else and tidying up is your own affair.
 
-Core images are not ignored either.  The one place the suite forks --
-`test_err_death` -- drops `RLIMIT_CORE` to zero in the child before anything
-can fault, so the aborts it deliberately provokes write no image and there is
-nothing to hide.  An unexpected core file is a defect worth seeing in
-`git status`, and ignoring it would hide the regression rather than prevent
-it.
+Core images are not ignored either, and the reason is a judgement rather than
+an oversight.  An unexpected core file is a defect worth seeing in
+`git status`; ignoring the pattern would hide the regression instead of
+preventing it.
+
+What prevents it on the hosts that allow it is `test_err_death` dropping
+`RLIMIT_CORE` to zero in the forked child before anything can fault, so the
+aborts it deliberately provokes write no image.  That is **hygiene, and it is
+conditional** -- it is not a guarantee the suite makes everywhere:
+
+-   Where `<sys/resource.h>` and `RLIMIT_CORE` are unavailable the block is
+    compiled out, and the expected aborts write core images again, wherever
+    `/proc/sys/kernel/core_pattern` (or the platform equivalent) directs them.
+-   Where they are available the `setrlimit()` result is deliberately cast
+    away rather than checked.  A soft-limit *decrease* cannot fail under
+    POSIX, and a host that somehow refused one would simply go back to
+    writing the dumps it wrote before.
+
+Neither condition is promoted into a registration gate or a test assertion,
+on purpose.  Refusing to register the target would trade the whole abort
+contract -- the only positive proof that `err.c`'s assertions fire -- for
+tidiness, and failing the target over an unwritten-image regression would be
+a false negative: the suite's tests are there to fail for bugs in the
+library, not for properties of the host.  The abort contract itself is
+unaffected either way, because `WIFSIGNALED()`/`WTERMSIG()` report the signal
+whether or not the kernel also wrote an image.
+
+Both behaviours were measured, with `ulimit -c unlimited` in force so that the
+kernel was free to write.  As shipped, a direct run of `test_err_death` leaves
+**no** core file.  With the suppression block compiled out, the same source
+still passes every assertion and leaves **exactly six** images -- one per
+aborting case -- of roughly 440 KiB each, wherever `core_pattern` directs
+them.  So on a host without `RLIMIT_CORE`, expect them and clean them up;
+`git status` showing them is the intended outcome, not a defect in the
+suite.
 
 ### Prerequisites
 
 -   A C99 compiler.  GCC 13 is the reference the suite is verified with.
+    Every test source is standard C99; the two facilities that are not part
+    of the language -- a command-line option that undefines a macro, and a
+    linker that implements `--wrap` -- are probed at configure time rather
+    than assumed, and the paragraphs above say what happens on a host that
+    lacks either.
 -   CMake and CTest.  The project's own configure floor is the 3.18 that
-    `cmake_minimum_required()` declares; the `ctest --test-dir` invocations
-    documented above need 3.20 or later, and `--output-junit` needs 3.21 or
-    later.  3.23.3 is the reference the suite is verified with.
+    `cmake_minimum_required()` declares, and the test wiring stays under it:
+    the newest thing `tests/CMakeLists.txt` uses is
+    `CMAKE_REQUIRED_LINK_OPTIONS`, at 3.14.  The `ctest --test-dir`
+    invocations documented above need 3.20 or later, and `--output-junit`
+    needs 3.21 or later.  3.23.3 is the reference the suite is verified with.
 -   An OpenSSL 3.0 or later development installation that CMake can
     discover.  `find_package(OpenSSL 3.0 REQUIRED)` resolves both an include
     directory and the crypto library -- `FindOpenSSL` lists both among the
@@ -452,5 +555,12 @@ it.
     compiled out when it is not, so it is a nicety rather than a
     requirement.  None of this is required: a host without one of them loses
     the corresponding target and configures, builds and runs everything else
-    cleanly.  The six unconditional targets need nothing beyond standard
-    C99.
+    cleanly.
+-   Optionally, for a **Release-style** build only, a compiler that accepts
+    `-UNDEBUG` or `/UNDEBUG`.  `test_err_guards` and `test_err_death` need
+    `err.c`'s assertions to survive the `-DNDEBUG` that
+    `-DCMAKE_BUILD_TYPE=Release` adds project-wide, and one of those two
+    spellings is how that is done.  A default build defines `NDEBUG` nowhere
+    and needs neither, so on a host that accepts neither the default build is
+    unaffected and only a Release-style build is refused -- at compile time,
+    by the sources' own pins, with a diagnostic naming the cause.

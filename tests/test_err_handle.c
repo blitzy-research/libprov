@@ -625,37 +625,34 @@ static int test_dup_handle(void)
  * The delta alone would be satisfied if both sides were zero, which is exactly
  * what a free that also reset the observation state would produce.
  *
- * WHAT THIS CASE CANNOT REACH, AND EXACTLY WHERE MATTERS STAND.  Everything
- * asserted here is about what proverr_free_handle() must NOT do.  The positive
- * fact -- that it releases the block, that it releases exactly the block it
- * was given, and that it releases it exactly once -- is invisible from this
- * translation unit: the function returns nothing, writes through nothing and
- * calls no stub, so a body deleted outright would satisfy every assertion
- * below.  MEASURED rather than supposed: with err.c:82 reduced to a no-op the
- * whole mandatory suite still reports 8 of 8 passing.
+ * WHAT THIS CASE CANNOT REACH, AND WHICH TARGET DOES.  Everything asserted here
+ * is about what proverr_free_handle() must NOT do.  The positive fact -- that it
+ * releases the block, that it releases exactly the block it was given, and that
+ * it releases it exactly once -- is invisible from this translation unit: the
+ * function returns nothing, writes through nothing and calls no stub, so a body
+ * deleted outright would satisfy every assertion below.  Observing a release
+ * positively needs the ALLOCATOR to be the witness, which needs link-time
+ * interposition on free(), which no ordinary target can have.
  *
- * NO OTHER TARGET IN THE MANDATORY SUITE CLOSES THAT GAP, and this comment says
- * so rather than pointing at one that does not.  tests/test_err_alloc.c gets
- * closest and still does not reach it: its case A-5 requires a duplicate to be
- * a distinct object from its source and its case A-7 requires the source to
- * keep working after the duplicate has been freed, which together rule out a
- * release that let go of the SOURCE or left it unusable -- but not one that did
- * nothing, and not one that let go of some unrelated block, because neither
- * disturbs the source.  Observing a release positively needs the ALLOCATOR to
- * be the witness, which needs link-time interposition on free().  That target
- * interposes on malloc alone, deliberately: wrapping free would put the
- * interposer in the path of every deallocation the process makes, stdio's
- * included, which is the one thing that can make an allocation-failure test
- * non-deterministic, and the specification fixes that target's only link option
- * at -Wl,--wrap=malloc.
+ * tests/test_err_alloc.c is the target that has it.  It links with
+ * -Wl,--wrap=free as well as -Wl,--wrap=malloc, and its case A-9 asserts, as
+ * exact counts, that one call to proverr_free_handle() entered free exactly
+ * once, released exactly one block, and released THE BLOCK IT WAS PASSED and no
+ * other; its case A-10 asserts that a null handle still reaches free and
+ * releases nothing; its case A-7 arms the same identity check around the
+ * release of a duplicate, so a release that let go of the source when handed the
+ * copy is named rather than inferred; and its final balance line requires every
+ * block that executable obtained to have been given back exactly once, which is
+ * a leak assertion for the whole file.  So the no-op mutation this case cannot
+ * see does fail the mandatory suite -- it fails test_err_alloc -- and the
+ * division of labour is exact rather than a gap: what is asserted HERE is that a
+ * release invokes no callback and disturbs no observation state, which is a
+ * claim about err.c:80-83's silence that the allocator cannot make.
  *
- * WHERE IT IS OBSERVED is the opt-in -fsanitize=address,undefined configuration
- * documented in README.md, where the allocator is the witness by construction.
- * MEASURED: the same no-op mutation makes LeakSanitizer report detected memory
- * leaks in five of the eight targets, this one among them.  So the residual
- * limit is exact and worth stating plainly -- a release regression is caught by
- * a documented configuration, not by the default one -- and nothing here is
- * redundant with what that configuration adds.
+ * The opt-in -fsanitize=address,undefined configuration documented in README.md
+ * remains useful and is no longer load-bearing for this property: it reports the
+ * same regression with an allocation-site stack trace, where test_err_alloc
+ * reports it as a count.
  */
 static int test_free_handle(void)
 {

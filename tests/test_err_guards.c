@@ -142,6 +142,67 @@
 #include <stdio.h>
 
 /*
+ * ---------------------------------------------------------------------------
+ * THE VARIANT IS PINNED AT COMPILE TIME, AND A MISCONFIGURED BUILD IS REFUSED
+ * ---------------------------------------------------------------------------
+ * This one source becomes two CTest targets, and which contract each of them
+ * asserts is decided entirely by two macros the build sets:
+ *
+ *   test_err_guards         neither NDEBUG nor LIBPROV_TEST_NDEBUG_VARIANT.
+ *                           err.c's assertions are live, so the invalid inputs
+ *                           abort and no graceful NULL return is reachable.
+ *   test_err_guards_ndebug  BOTH.  NDEBUG reconfigures err.c so the assertions
+ *                           vanish and err.c:51-54 becomes reachable; the
+ *                           marker tells the body below to assert that.
+ *
+ * Those are the only two coherent states, and the two incoherent ones are both
+ * silent failures rather than loud ones, which is why they are refused here:
+ *
+ *   NDEBUG without the marker    the body asserts that invalid inputs abort,
+ *                                against an err.c whose assertions were
+ *                                compiled away.  In a Release build with no
+ *                                undefine option applied, this is exactly what
+ *                                would happen -- and the abort assertions live
+ *                                in tests/test_err_death.c, so THIS binary
+ *                                would not even fail: it would pass while
+ *                                asserting nothing about the contract it names.
+ *   the marker without NDEBUG    the mirror image: the body asserts graceful
+ *                                NULL returns against an err.c that still
+ *                                aborts, so the process dies on the first such
+ *                                input.  That one is at least loud, but it is
+ *                                loud at run time and reported as a test
+ *                                failure rather than as the build mistake it is.
+ *
+ * The check reads THIS translation unit's macro state, while the behaviour it
+ * protects belongs to err.c's.  That is sound because both are compiled as part
+ * of the same CTest target and therefore carry the same flags and the same
+ * definitions -- err.c is in this target's source list precisely so that its
+ * guard state is under the target's control.  A divergence between the two TUs
+ * would require someone to give one of them different flags by hand, which no
+ * path through tests/CMakeLists.txt does.
+ *
+ * This is the second of the two layers that keep the pinning honest.  The first
+ * is tests/CMakeLists.txt applying the measured NDEBUG-undefine option; this
+ * one is what makes the absence of that option a compile error instead of a
+ * green test that tests nothing.
+ */
+#if defined(NDEBUG) && !defined(LIBPROV_TEST_NDEBUG_VARIANT)
+# error "test_err_guards: NDEBUG is defined but LIBPROV_TEST_NDEBUG_VARIANT is not. \
+The default variant asserts that err.c's assertions FIRE, so it must be compiled \
+with NDEBUG undefined. Either the NDEBUG-undefine option that tests/CMakeLists.txt \
+measures (-UNDEBUG, or /UNDEBUG) is not supported by this compiler, or something \
+defined NDEBUG after it. Build without -DCMAKE_BUILD_TYPE=Release, or supply the \
+spelling this compiler accepts."
+#endif
+#if defined(LIBPROV_TEST_NDEBUG_VARIANT) && !defined(NDEBUG)
+# error "test_err_guards: LIBPROV_TEST_NDEBUG_VARIANT is defined but NDEBUG is not. \
+The NDEBUG variant asserts that err.c returns NULL instead of aborting, which is \
+only true when err.c itself is compiled under NDEBUG. Both definitions come from \
+the same DEFS list in tests/CMakeLists.txt and neither may be set without the \
+other."
+#endif
+
+/*
  * A human-readable name for the variant in force, printed once by main() so a
  * `ctest -V` log says which contract the following lines belong to.
  * Informational only: the verdict comes from the assertion counters.

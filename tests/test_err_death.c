@@ -26,12 +26,31 @@
  * (err.c:47, err.c:48, err.c:49).  Where those assertions are live -- which is
  * the default build -- an invalid input does not return an error code, it
  * ABORTS.  This file asserts that the abort really happens, for every one of
- * those inputs.  Its harness is file-local and shared with nothing: the only
- * other place in the suite that forks is param_util.h's protected-boundary
- * oracle, compiled into the two numeric targets alone, whose subject is num.c's
- * memory safety rather than err.c's assertions and whose child looks for a
- * SIGSEGV-class fault rather than SIGABRT.  Neither harness is a candidate for
- * being folded into the other.
+ * those inputs.
+ *
+ * THIS IS THE SUITE'S ONLY FORK-BASED HARNESS.  It is file-local and shared with
+ * nothing: no other test source calls fork() or waitpid(), and none observes a
+ * termination signal.  test_err_guards.c names SIGABRT and the wait-status macros,
+ * but only inside comments, and only to record that the aborts are asserted HERE
+ * rather than there.  Do not promote any of this into a shared
+ * fixture header -- the whole reason a fork is needed is that the outcome being
+ * asserted is FATAL to the process that produces it, and exactly one contract in
+ * the library is of that shape.
+ *
+ * The contrast worth understanding is with how test_num_get.c pins a comparable
+ * "the library must not do X" property, because it looks similar and is
+ * structurally opposite.  param_util.h offers a poisoned payload -- the unmappable
+ * PARAM_POISON_DATA address, handed out by param_build_poisoned() -- to pin that
+ * num.c rejects a wrong data type, and takes the empty-source shortcut, BEFORE
+ * reading the payload.  That oracle does not fork and needs no child, because
+ * there a fault is the FAILURE: if num.c read the poisoned payload the numeric
+ * test process itself would die and CTest would report the target as failed,
+ * which is the verdict wanted.  Here a fault is the PASS, so something has to
+ * outlive it in order to say so -- hence a child to die in and a parent to
+ * classify the wait status.
+ *
+ * That is why neither harness is a candidate for being folded into the other, and
+ * why the numeric targets correctly carry no process-control machinery at all.
  *
  * The complementary half of the contract belongs to test_err_guards.c: with
  * NDEBUG defined the assertions vanish, the guard at err.c:51-54 becomes
@@ -123,6 +142,47 @@
 #include <stdlib.h>
 #include <signal.h>
 #include <errno.h>
+
+/*
+ * ---------------------------------------------------------------------------
+ * LIVE ASSERTIONS ARE PINNED AT COMPILE TIME, AND A BUILD WITHOUT THEM IS
+ * REFUSED
+ * ---------------------------------------------------------------------------
+ * Every case in this file requires a child process to die of SIGABRT, and the
+ * only thing that raises that signal is an assert() inside err.c.  Define NDEBUG
+ * and those assertions are compiled away: the invalid inputs stop aborting, the
+ * children exit normally, and this file reports six failures -- for a reason
+ * that has nothing to do with err.c's behaviour and everything to do with how
+ * the target was built.  Six misleading failures are better than a false pass,
+ * but a compile error naming the actual cause is better than either.
+ *
+ * tests/CMakeLists.txt applies the NDEBUG-undefine option it measured, so that
+ * -DCMAKE_BUILD_TYPE=Release cannot delete the assertions from under this
+ * target.  Where no spelling for that option could be measured the option
+ * degrades to a no-op rather than a configure error, which is deliberate -- a
+ * default build on such a host defines NDEBUG nowhere and works perfectly -- and
+ * this check is what stops the one remaining combination, a Release-style build
+ * on such a host, from producing a binary that cannot possibly pass.
+ *
+ * The check reads THIS translation unit's macro state, while the assertions it
+ * protects are in err.c's.  That is sound because err.c is in this target's own
+ * source list, compiled with the same flags as this file, precisely so its guard
+ * state is under the target's control.
+ *
+ * Note the asymmetry with tests/test_err_guards.c, which pins the same property
+ * in both directions: that source has an NDEBUG variant and so must reject only
+ * the INCOHERENT pairings, whereas this file has no NDEBUG variant and no use
+ * for one -- the graceful NULL returns are that file's subject, the aborts are
+ * this one's -- so it rejects NDEBUG outright.
+ */
+#ifdef NDEBUG
+# error "test_err_death: NDEBUG is defined. Every case in this file requires a \
+forked child to die of SIGABRT, which only err.c's assert() calls can cause, and \
+NDEBUG removes them. The NDEBUG-undefine option that tests/CMakeLists.txt \
+measures (-UNDEBUG, or /UNDEBUG) is either unsupported by this compiler or was \
+overridden. Build without -DCMAKE_BUILD_TYPE=Release, or supply the spelling this \
+compiler accepts."
+#endif
 
 /*
  * The POSIX headers are included INSIDE the guard on purpose.  <sys/wait.h>,

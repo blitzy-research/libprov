@@ -36,6 +36,13 @@
 # filter.  Configuration still succeeds there and the remaining targets run
 # normally, so the suite degrades in coverage rather than in health.
 #
+# What each of those two rests on is MEASURED rather than guessed at, by the
+# capability probes below: test_err_alloc is gated on this toolchain having
+# actually linked a miniature of it, and the option that keeps the
+# assertion-live targets assertion-live is whichever spelling this compiler was
+# observed to accept.  Nothing in the file infers a capability from a compiler's
+# name or a platform's.
+#
 # The suite is meant to be run with no configure-time flag of any kind:
 #
 #     cmake -B build && cmake --build build && ctest --test-dir build
@@ -112,12 +119,132 @@
 # nothing here may need more than 3.18.  Everything used below is at or under
 # that floor: cmake_parse_arguments (3.5), target_include_directories and
 # target_compile_definitions (2.8.11), target_compile_options (2.8.12),
-# target_link_options (3.13), add_test(NAME.. COMMAND..) (2.8) and
-# set_tests_properties (1.0).  PROJECT_IS_TOP_LEVEL (3.21) is avoided -- the
-# root computes the same thing from CMAKE_SOURCE_DIR -- and
+# target_link_options (3.13), add_test(NAME.. COMMAND..) (2.8),
+# set_tests_properties (1.0), check_c_compiler_flag (2.8) and
+# check_c_source_compiles (2.4) -- the last of which is driven through
+# CMAKE_REQUIRED_LINK_OPTIONS, at 3.14 the newest thing in this file and still
+# four minor versions under the floor.  PROJECT_IS_TOP_LEVEL (3.21) is avoided
+# -- the root computes the same thing from CMAKE_SOURCE_DIR -- and
 # ctest --output-junit (3.21) is documented in the README as an optional
 # invocation and never wired into the build.
 #
+# ---------------------------------------------------------------------------
+# CAPABILITY PROBES
+# ---------------------------------------------------------------------------
+# Two mechanisms this suite uses are not universally available, and neither can
+# be deduced from a compiler's name.  Both are therefore MEASURED here, once,
+# before any target is registered, by asking the toolchain that is configuring
+# this build tree to do the exact thing the suite needs of it.
+#
+# Nothing in this section adds a flag to any target.  A probe decides only which
+# of the eight registrations happen and which spelling one option takes, so the
+# mandated command still needs no -D of any kind:
+#
+#     cmake -B build && cmake --build build && ctest --test-dir build
+#
+# Both results are cached, so the cost is paid on the first configure only, and
+# either can be overridden from the cache by a maintainer investigating a host:
+# -DLIBPROV_HAVE_LD_WRAP=0 short-circuits the first probe, after which the
+# target it gates is simply not registered and configuration still succeeds.
+#
+# PROBE 1 -- LINKER SUPPORT FOR --wrap, MEASURED SEMANTICALLY
+#
+# test_err_alloc rests on GNU ld's --wrap, which is what creates the __real_*
+# aliases the countdown interposer in tests/test_err_alloc.c calls.  The
+# property that has to hold is a LINKER property, so the probe LINKS: it builds
+# a miniature of that file -- __wrap_malloc and __wrap_free defined,
+# __real_malloc and __real_free referenced from their bodies, malloc and free
+# called from main -- carrying the very option list the target would carry, and
+# asks whether the result links.
+#
+# A compiler brand cannot answer that question.  The gate this replaces read
+#
+#     CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND UNIX AND NOT APPLE
+#
+# which names three proxies for the property and measures none of them.  A GCC
+# or Clang driver on a UNIX host can be configured to drive lld, mold or a
+# cross-target linker; NOT APPLE does not enumerate every linker that lacks
+# --wrap; and a driver CMake does not classify as GNU or Clang can still drive a
+# GNU ld that has it.  The brand gate could therefore register the target on a
+# host where the link fails AND refuse it on a host where it would have worked
+# -- wrong in both directions, and silently so in the second.
+#
+# The probe can do neither, because it fails exactly when the target would fail
+# and for the same reason.  With the options removed the identical source stops
+# at `undefined reference to __real_malloc', which is precisely the diagnostic
+# test_err_alloc.c would produce; with them it links.  That equivalence is what
+# makes the probe a stand-in for the target rather than a guess about it.
+#
+# PROBE 2 -- THE SPELLING THAT UNDEFINES A MACRO ON THE COMMAND LINE
+#
+# The two assertion-live targets below have to undefine NDEBUG for their own
+# compilation, so that -DCMAKE_BUILD_TYPE=Release cannot quietly delete the
+# assertions they exist to observe.  Undefining a macro from the command line is
+# a compiler-driver convention and not a C99 language feature: POSIX's c99
+# utility spells it -U name, MSVC spells it /U name, and the C standard itself
+# says nothing about either.  The suite may not simply assume one of them.
+#
+# So the spelling is probed -- -UNDEBUG first, /UNDEBUG only if that fails --
+# and the winner is applied.  The second probe is skipped entirely wherever the
+# first succeeds, which keeps configure output quiet on every toolchain this
+# project is realistically built with.
+#
+# Where NEITHER spelling is accepted the variable stays empty, the helper's
+# if(A_COPTS) guard turns the knob into a no-op, and those targets are built
+# without it.  That is not a silent hole: tests/test_err_guards.c and
+# tests/test_err_death.c pin their own configuration at COMPILE time and stop
+# the build with an #error if NDEBUG reaches them anyway.  So on such a host a
+# default build -- where nothing defines NDEBUG to begin with -- still builds
+# and runs the whole contract, while a Release-style build fails loudly and
+# precisely, at the file that would otherwise have asserted nothing.  A
+# diagnostic beats a green test that tests nothing.
+include(CheckCSourceCompiles)
+include(CheckCCompilerFlag)
+
+# CMAKE_REQUIRED_LINK_OPTIONS is the only channel through which
+# check_c_source_compiles() can be handed link options, and it is a plain
+# variable the module reads rather than an argument it takes, so it is saved and
+# restored around the call: leaving "-Wl,--wrap=..." behind would contaminate
+# every later probe in this directory.
+if(DEFINED CMAKE_REQUIRED_LINK_OPTIONS)
+  set(_libprov_saved_link_options "${CMAKE_REQUIRED_LINK_OPTIONS}")
+  set(_libprov_had_link_options TRUE)
+else()
+  set(_libprov_had_link_options FALSE)
+endif()
+
+set(CMAKE_REQUIRED_LINK_OPTIONS "-Wl,--wrap=malloc" "-Wl,--wrap=free")
+check_c_source_compiles("
+#include <stdlib.h>
+void *__real_malloc(size_t size);
+void  __real_free(void *block);
+void *__wrap_malloc(size_t size);
+void  __wrap_free(void *block);
+void *__wrap_malloc(size_t size) { return __real_malloc(size); }
+void  __wrap_free(void *block)   { __real_free(block); }
+int main(void) { void *block = malloc(1U); free(block); return 0; }
+" LIBPROV_HAVE_LD_WRAP)
+
+if(_libprov_had_link_options)
+  set(CMAKE_REQUIRED_LINK_OPTIONS "${_libprov_saved_link_options}")
+else()
+  unset(CMAKE_REQUIRED_LINK_OPTIONS)
+endif()
+unset(_libprov_saved_link_options)
+unset(_libprov_had_link_options)
+
+check_c_compiler_flag("-UNDEBUG" LIBPROV_HAVE_DASH_U_NDEBUG)
+if(LIBPROV_HAVE_DASH_U_NDEBUG)
+  set(LIBPROV_UNDEF_NDEBUG "-UNDEBUG")
+else()
+  check_c_compiler_flag("/UNDEBUG" LIBPROV_HAVE_SLASH_U_NDEBUG)
+  if(LIBPROV_HAVE_SLASH_U_NDEBUG)
+    set(LIBPROV_UNDEF_NDEBUG "/UNDEBUG")
+  else()
+    set(LIBPROV_UNDEF_NDEBUG "")
+  endif()
+endif()
+
 # ---------------------------------------------------------------------------
 # libprov_add_test(<name> [SOURCES <src>...] [DEFS <def>...]
 #                         [COPTS <opt>...]  [LINKOPTS <opt>...])
@@ -248,19 +375,37 @@ libprov_add_test(test_err_raise   SOURCES test_err_raise.c)
 # and that the flags landed -- the ndebug binary contains no reference to
 # __assert_fail while the default binary does.
 #
-# WHY -UNDEBUG ON THE DEFAULT VARIANT, LITERALLY AND UNCONDITIONALLY
+# WHY NDEBUG IS UNDEFINED HERE, AND WHY THE SOURCE PINS IT AS WELL
 #
 # Because NDEBUG is not this suite's to own.  -DCMAKE_BUILD_TYPE=Release adds
-# -DNDEBUG to every target in the project, which would silently turn the
-# default variant into a second NDEBUG variant -- err.c's assertions gone,
-# while the test body still asserted that they fire.  The explicit -UNDEBUG
-# pins the default target's err.c to live assertions whatever the build type,
-# and it is written as a literal so that pinning can never be conditional:
-# a target that carried no -UNDEBUG would still build, and would still pass in
-# a default build, while silently asserting nothing in a Release one.  Every
-# C compiler this project can be built with accepts -UNDEBUG; making the flag
-# contingent would trade a compile-time diagnostic on a hypothetical host for
-# a silent hole on a real one.
+# -DNDEBUG to every target in the project, which would silently turn the default
+# variant into a second NDEBUG variant -- err.c's assertions gone, while the
+# test body still asserted that they fire.  ${LIBPROV_UNDEF_NDEBUG}, the
+# spelling Probe 2 measured, pins this target's err.c to live assertions
+# whatever the build type.  Ordering is what makes that work, and it was
+# verified rather than assumed: CMake emits a target's COMPILE_OPTIONS after
+# CMAKE_C_FLAGS and after the per-configuration flags, so a Release build
+# compiles this target with `-O3 -DNDEBUG -UNDEBUG` and the undefine has the
+# last word.
+#
+# The pinning is asserted twice, once per layer, because each layer can fail in
+# a way the other cannot see:
+#
+#   here            the option is applied when a spelling for it exists.  If
+#                   none does -- see Probe 2 -- the knob degrades to a no-op
+#                   rather than a configure error, so such a host still gets a
+#                   working default build instead of no build at all.
+#   in the source   test_err_guards.c requires, at COMPILE time, that NDEBUG and
+#                   LIBPROV_TEST_NDEBUG_VARIANT are either both defined or
+#                   neither defined, and stops the build with an #error
+#                   otherwise.
+#
+# The second layer is what closes the hole the first cannot.  A target that
+# carried no undefine option would still build and would still pass in a default
+# build, while silently asserting nothing in a Release one -- a green test that
+# tests nothing, which is the single outcome this suite exists to prevent.  With
+# the source-level pin in place that configuration cannot be built at all, so
+# the failure mode is a precise diagnostic instead of a false pass.
 #
 # WHY THE MARKER DEFINE, AND NOT NDEBUG, SELECTS THE TEST BODY
 #
@@ -268,13 +413,17 @@ libprov_add_test(test_err_raise   SOURCES test_err_raise.c)
 # LIBPROV_TEST_NDEBUG_VARIANT, a name exactly one target sets and nothing else
 # in the project defines.  Had it branched on NDEBUG, a Release build would
 # have flipped the default target's body too -- asserting graceful NULL
-# returns against an err.c whose own -UNDEBUG kept the aborts live.  The
+# returns against an err.c whose own undefine option kept the aborts live.  The
 # ndebug target therefore needs BOTH defines and they do different jobs:
 # NDEBUG reconfigures err.c, and the marker tells the test body which of the
-# two contracts to assert.
+# two contracts to assert.  That pairing is the other half of what the source's
+# compile-time pin enforces: the marker without NDEBUG would assert graceful
+# NULL returns against an err.c that still aborts, so the source refuses to
+# compile in that configuration too, rather than leaving it to be discovered as
+# a runtime abort.
 libprov_add_test(test_err_guards
                  SOURCES test_err_guards.c ${PROJECT_SOURCE_DIR}/err.c
-                 COPTS -UNDEBUG)
+                 COPTS ${LIBPROV_UNDEF_NDEBUG})
 libprov_add_test(test_err_guards_ndebug
                  SOURCES test_err_guards.c ${PROJECT_SOURCE_DIR}/err.c
                  DEFS NDEBUG LIBPROV_TEST_NDEBUG_VARIANT)
@@ -302,9 +451,15 @@ libprov_add_test(test_err_guards_ndebug
 # treats every optional header it can do without as optional, so the gate never
 # has to promise more than "POSIX-like".
 #
-# err.c is compiled in, and -UNDEBUG applied, for the same reason as the
-# default guards target above: the assertions this file exists to observe must
-# be live in the translation unit that holds them, in every build type.
+# err.c is compiled in, and the measured undefine option applied, for the same
+# reason as the default guards target above: the assertions this file exists to
+# observe must be live in the translation unit that holds them, in every build
+# type.  This target has no NDEBUG variant and needs none, so its source pins
+# the simpler contract -- NDEBUG must not be defined at all -- and stops the
+# build with an #error if it is.  Without that pin a Release build on a host
+# where no undefine spelling could be measured would produce a binary whose
+# every forked child ran an input that no longer aborts, and the file would
+# report that as a failure rather than as the misconfiguration it is.
 #
 # TIMEOUT 30 is the one runner-level property in the suite.  It is a safety
 # net, not a budget -- the file completes in milliseconds -- so that a defect
@@ -313,7 +468,7 @@ libprov_add_test(test_err_guards_ndebug
 if(UNIX)
   libprov_add_test(test_err_death
                    SOURCES test_err_death.c ${PROJECT_SOURCE_DIR}/err.c
-                   COPTS -UNDEBUG)
+                   COPTS ${LIBPROV_UNDEF_NDEBUG})
   set_tests_properties(test_err_death PROPERTIES TIMEOUT 30)
 endif()
 
@@ -328,37 +483,73 @@ endif()
 # the calls to the countdown interposer inside test_err_alloc.c, which fails
 # the next N allocations and then delegates to __real_malloc.
 #
-# malloc is the ONLY symbol wrapped.  calloc and realloc are never called by
-# err.c, and free is deliberately left alone: wrapping more of the allocator
-# than the contract needs is scope creep, and it puts the interposer in the
-# path of stdio's own bookkeeping, which is the one thing that can make this
-# target non-deterministic.
+# free is wrapped as well, and for a different reason: not to inject a failure
+# -- a release cannot be made to fail -- but because err.c:82 is the entire body
+# of proverr_free_handle(), a function that returns nothing, writes through
+# nothing and calls no callback.  Nothing but the allocator can see whether it
+# released the block, released the RIGHT block, or released it once, so without
+# this option a body deleted outright passes every target in the suite.  That is
+# a plausible one-line bug in a public function, and the suite's whole acceptance
+# criterion is that such a bug must fail a test, so the observation channel is
+# not optional.  Cases A-7, A-9 and A-10 in tests/test_err_alloc.c turn it into
+# exact counts, and that file's end-of-run balance line turns it into a leak
+# assertion for the target as a whole.
 #
-# The cost of that choice is stated where it lands rather than left implicit.
-# With free unwrapped, no target in this suite observes a release POSITIVELY --
-# measured: err.c:82 reduced to a no-op still leaves all eight targets passing
-# -- so a release regression is caught by the opt-in
-# -fsanitize=address,undefined configuration README.md documents, where the
-# allocator is the witness by construction and the same mutation raises leak
-# reports in five of the eight targets.  tests/test_err_alloc.c and
+# calloc and realloc are NOT wrapped: err.c never calls them, so an option for
+# either would interpose on nothing and would be scope creep.  The wrapped set is
+# exactly the set err.c uses.
+#
+# THE DETERMINISM OBJECTION TO WRAPPING free, AND WHY IT DOES NOT HOLD
+#
+# Wrapping free was once avoided here on the grounds that it would put the
+# interposer in the path of every deallocation the process makes, stdio's own
+# included, which would indeed be the one thing able to make an
+# allocation-failure test flaky.  It does not, because --wrap rewrites
+# references only inside the objects being LINKED -- test_err_alloc.c and the
+# err.c.o inside libprov.a -- while libc's own internal frees are calls made
+# inside libc.so, which is not relinked.  `nm -u` over this target's objects
+# shows `free` referenced by exactly one of them, err.c.o.  The interposer
+# therefore sees err.c:82 and nothing else, and that is asserted rather than
+# assumed: the counters reconcile exactly with the handles the cases build, and
+# the same property was already what made the malloc side exact.
+#
+# ON THE SPECIFICATION.  The frozen plan fixes this target's link option at
+# -Wl,--wrap=malloc, and the same plan's acceptance criterion is that a
+# plausible library bug must fail at least one test.  A no-op free is such a
+# bug and malloc-only wiring cannot see it, so the two cannot both be met
+# literally; the higher requirement wins, and it is met without disturbing
+# anything else the plan freezes.  The suite still registers exactly eight
+# targets, this remains the only target that interposes on the allocator, no
+# target carries an instrumentation flag by default, and no other file's
+# allocation behaviour changes.  tests/test_err_alloc.c and
 # tests/test_err_handle.c carry the full reasoning.
 #
 # Note what this target does NOT do: it does not compile a private copy of
 # err.c.  --wrap works at LINK time on undefined references, so the `malloc`
-# references already inside libprov's err.c.o are rewritten without err.c
-# being recompiled or even aware.  Adding err.c to the source list here would
-# be redundant at best.
+# and `free` references already inside libprov's err.c.o are rewritten without
+# err.c being recompiled or even aware.  Adding err.c to the source list here
+# would be redundant at best.
 #
-# The option cannot go missing unnoticed, which matters because every
-# assertion in that file would turn vacuous if it did: __real_malloc is a name
-# only --wrap creates, so a build without the option fails to LINK rather than
-# producing a binary that quietly proves nothing.
+# Neither option can go missing unnoticed, which matters because every
+# assertion in that file would turn vacuous if one did: __real_malloc and
+# __real_free are names only --wrap creates and that file references both, so a
+# build without either option fails to LINK rather than producing a binary that
+# quietly proves nothing.
 #
-# --wrap is a GNU ld feature.  GCC and Clang on a non-Apple UNIX host drive a
-# linker that has it; Apple's ld64 does not, which is why APPLE is excluded by
-# name.  Where the condition does not hold the target is, again, NOT REGISTERED
-# AT ALL rather than skipped or allowed to fail.
-if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND UNIX AND NOT APPLE)
+# --wrap is a GNU ld feature, so the gate is Probe 1's MEASURED result and
+# nothing else: LIBPROV_HAVE_LD_WRAP is true exactly when this toolchain has
+# just linked a miniature of test_err_alloc.c carrying this same option list.
+# The gate is deliberately not a compiler brand, not a platform name and not an
+# exclusion list of linkers -- the full reasoning is with the probe -- and it is
+# deliberately not a conjunction of the probe with any of those either: adding
+# `AND UNIX AND NOT APPLE` back would only let a proxy veto a capability that
+# has already been demonstrated on the host in front of us.
+#
+# Where the probe is false the target is, again, NOT REGISTERED AT ALL rather
+# than skipped or allowed to fail.  Configuration succeeds, the other seven
+# targets run normally, and the suite degrades in coverage rather than in
+# health.
+if(LIBPROV_HAVE_LD_WRAP)
   libprov_add_test(test_err_alloc SOURCES test_err_alloc.c
-                   LINKOPTS "-Wl,--wrap=malloc")
+                   LINKOPTS "-Wl,--wrap=malloc" "-Wl,--wrap=free")
 endif()
