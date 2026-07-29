@@ -1,153 +1,86 @@
-/* CC0 license applied, see LICENCE.md */
+/* CC0 license applied, see LICENSE */
 
 #ifndef LIBPROV_TESTS_TESTUTIL_H
 #define LIBPROV_TESTS_TESTUTIL_H
 
 /*
- * ===========================================================================
- * tests/testutil.h -- shared assertion machinery for the libprov test suite
- * ===========================================================================
+ * Shared assertion machinery for the libprov test suite.  Include it first:
+ * it pulls in nothing but the C standard library, so it can precede any
+ * project or OpenSSL header without perturbing it, and it needs no library
+ * beyond libc to link.
  *
- * Every test program under tests/ includes this header FIRST.  It is
- * deliberately self-contained: it pulls in nothing but the C standard library,
- * so it can be included ahead of any project or OpenSSL header without
- * perturbing them, and it needs no library beyond libc to link.
+ * EXIT STATUS IS DERIVED FROM THE COUNTERS, NEVER FROM CONTROL FLOW.  Every
+ * assertion below bumps testutil_asserted, and a failing one bumps
+ * testutil_mismatched; the status is non-zero when there is a mismatch OR
+ * when no assertion ran at all.  A program that asserts nothing therefore
+ * fails, loudly, and reaching the end of main() cannot manufacture a pass.
+ * Both spellings honour that: TEST_REPORT() also prints a summary, while
+ * "return !ret;" works because this header's ret is refreshed from the
+ * counters.
  *
- * No user-specified rules exist for this project -- the rules facility reports
- * "No user rules provided" -- so this header is held to ordinary
- * enterprise-standard C practice.  The constraints it does honour come from
- * the project's testing requirements and are spelled out in the numbered
- * sections below, each next to the code that implements it.
+ * The counters only ever count an assertion that actually INSPECTED a value.
+ * An assertion that compares nothing is a missing assertion, not a weak one,
+ * so the one request of that kind this header can be handed -- a
+ * TEST_ASSERT_MEM_EQ() over zero bytes -- is recorded as a MISMATCH;
+ * testutil_check_mem_eq() says what a zero-capacity case should assert
+ * instead.
  *
- * ---------------------------------------------------------------------------
- * 1.  NO SMOKE TESTS -- the exit-status contract, which this header enforces
- * ---------------------------------------------------------------------------
+ * Every public macro ASSIGNS its verdict to the `test` visible where the
+ * macro is written, so the project's "TEST_ASSERT(expr); ret &= test;" idiom
+ * is correct even when a test spells the maintainer's "int ret = 1, test;"
+ * out for itself.  A macro that merely called a worker would leave that
+ * block-scope `test` indeterminate.
  *
- * A test that merely calls library code and observes that nothing crashed
- * proves nothing at all.  This header makes such a test structurally unable to
- * report success: every assertion below bumps a per-program counter pair, and
- * the exit status is derived from those counters and from nothing else.
+ * CALL, STORE, THEN ASSERT.  C does not specify the order in which
+ * function-call arguments are evaluated, so reading an output of the function
+ * under test inside the same expression that calls it is a bug, not a style
+ * preference:
  *
- *     exit status is non-zero  if and only if
- *         (mismatches > 0)  or  (assertions executed == 0)
+ *     rc = provnum_get_size_t(&val, &p);        1. call, store the result
+ *     rs = p.return_size;                       2. read the side effects
+ *     TEST_ASSERT_INT_EQ("get rc", rc, 1);      3. assert stored values
  *
- * A program that asserts nothing therefore FAILS, loudly, with the reason
- * printed.  Reaching the end of main() cannot manufacture a pass.
+ * Every value-comparing macro takes ALREADY-COMPUTED values for that reason,
+ * and each expands to a single function call, so no argument is evaluated
+ * twice.  TEST_ASSERT() evaluates its expression exactly once.
  *
- * ---------------------------------------------------------------------------
- * 2.  The project's own test idiom is preserved
- * ---------------------------------------------------------------------------
+ * EVERY FAILURE NAMES ITS SOURCE LINE.  Each public macro forwards the
+ * __FILE__ and __LINE__ of its own call site -- which is the whole reason
+ * these are macros rather than functions -- and a failing line opens in the
+ * shape compilers and editors already understand:
  *
- * libprov's test programs are standalone C99 executables that accumulate a
- * success flag and use a TEST_ASSERT() macro recording the truth of the
- * asserted expression in a variable named `test`, used like this:
+ *     [FAIL] tests/test_num_get.c:118: oversize rc: actual -4, expected -2
+ *     [PASS] oversize rc: -2
  *
- *     TEST_ASSERT(expr); ret &= test;
+ * The location is printed on failures only, since nobody reads a passing line
+ * and the counters, not the log, decide the verdict.  Two properties of the
+ * mechanism are worth knowing: the captured line is the line the MACRO NAME
+ * is on, and __FILE__ is whatever path the compiler was handed, so it is
+ * relative to the build's working directory.
  *
- * That spelling is preserved verbatim, and both `test` and `ret` are supplied
- * here so a test program can use the idiom without declaring anything.
+ * Unlike include/prov/num.h and include/prov/err.h, which are idempotent by
+ * construction, this header defines objects and so carries an include guard.
+ * Every object here has internal linkage, so each test executable owns its
+ * own counters and separate executables cannot interfere.
  *
- * ONE DELIBERATE DIVERGENCE: the original macro prints and continues,
- * accumulating results.  Continue-on-failure is kept -- one run then diagnoses
- * every problem rather than only the first -- but the exit status is no longer
- * a free-standing flag that a test could forget to maintain.  `ret` is
- * refreshed from the counters by every assertion, so it means precisely "at
- * least one assertion has run and none of them has failed".  Both exit idioms
- * are consequently counter-derived and both honour section 1:
- *
- *     return TEST_REPORT("test_num_get");   preferred, also prints a summary
- *     return !ret;                          the project's original spelling
- *
- * ---------------------------------------------------------------------------
- * 3.  CALL, STORE, THEN ASSERT -- read this before writing a single test
- * ---------------------------------------------------------------------------
- *
- * C does not specify the order in which function-call arguments are
- * evaluated.  Reading an output of the function under test inside the SAME
- * expression that calls it is therefore a bug, not a style preference.  This
- * was observed for real while this suite was being designed: a probe shaped
- * like
- *
- *     printf("rc=%d val=%zu\n", provnum_get_size_t(&val, &p), val);
- *
- * printed val=0 for cases that had in fact succeeded, because `val` was read
- * before the call that fills it had run.  Always do it in three steps:
- *
- *     rc = provnum_get_size_t(&val, &p);          1. call, store the result
- *     rs = p.return_size;                         2. read the side effects
- *     TEST_ASSERT_INT_EQ("get rc", rc, 1);        3. assert stored values
- *     TEST_ASSERT_SIZE_EQ("get val", val, (size_t)5);
- *
- * Every value-comparing macro here accepts ALREADY-COMPUTED values for exactly
- * that reason, and each one expands to a single function call, so every
- * argument is evaluated exactly once.  TEST_ASSERT() is the only macro that
- * must evaluate an expression of its own, and it evaluates it once.
- *
- * ---------------------------------------------------------------------------
- * 4.  Include guards, and why the project's public headers have none
- * ---------------------------------------------------------------------------
- *
- * include/prov/num.h and include/prov/err.h deliberately carry NO include
- * guards, and both get away with it: err.h precedes each of its #defines with
- * a matching #undef, and num.h contains only declarations and object-like
- * macros, so each is idempotent by construction.  The test fixtures take the
- * opposite and ordinary position and DO guard, because they define objects
- * with internal linkage and would otherwise break on a second inclusion.  The
- * guard above this comment is that guard.
- *
- * ---------------------------------------------------------------------------
- * 5.  Passing PROVNUM_E_* codes to these macros is safe
- * ---------------------------------------------------------------------------
- *
- * include/prov/num.h spells its error codes UNPARENTHESISED:
- *
- *     #define PROVNUM_E_TOOBIG        -2
- *
- * A macro that pasted such a parameter next to an operator could therefore
- * emit something like "x--2".  Nothing here does: every macro parameter is
- * used parenthesised, and the only operations applied to an expected value are
- * a cast and an equality comparison.  So
- *
- *     TEST_ASSERT_INT_EQ("rc", rc, PROVNUM_E_TOOBIG);
- *
- * is well-formed, and so is the same call with any of the other three codes.
- *
- * ---------------------------------------------------------------------------
- * 6.  Isolation, and no dependency on libcrypto
- * ---------------------------------------------------------------------------
- *
- * All state here has internal linkage, so every test executable owns its own
- * counters and no two executables can interfere: running the suite with
- * "ctest -j N" is safe.  Nothing here allocates, opens a file, reads the
- * environment, forks, or calls into libcrypto.  That last point is
- * load-bearing: libprov's provnum_ family exists precisely to replace
+ * Nothing here allocates, opens a file, reads the environment, forks, or
+ * calls into libcrypto: libprov's provnum_ family exists precisely to replace
  * libcrypto's OSSL_PARAM_get_ and OSSL_PARAM_set_ helpers, so a test that
- * called those would be measuring upstream OpenSSL instead of libprov.
- * <openssl/params.h> is not included here, and must not be included by any
- * test.
+ * called those would be measuring upstream OpenSSL.  <openssl/params.h> is
+ * not included here and must not be included by any test.
  *
- * ---------------------------------------------------------------------------
- * 7.  Colour
- * ---------------------------------------------------------------------------
- *
- * Verdicts are colourised with two short ANSI escapes, matching the project's
- * existing test output.  Compile with -DTESTUTIL_COLOUR=0 for escape-free
- * output.  isatty() is deliberately NOT used: it would drag POSIX headers into
- * a header that has to compile as strict C99.
+ * include/prov/num.h spells its error codes unparenthesised
+ * ("#define PROVNUM_E_TOOBIG -2"), so a macro that pasted such a parameter
+ * next to an operator could emit "x--2".  Every macro parameter below is used
+ * parenthesised, and the only operations applied to an expected value are a
+ * cast and an equality comparison, so passing any PROVNUM_E_ code is safe.
  */
 
-#include <stdio.h>              /* printf, fflush, stdout                   */
-#include <string.h>             /* memcmp, strcmp                           */
-#include <stddef.h>             /* size_t, NULL                             */
-#include <inttypes.h>           /* intmax_t, uintmax_t, PRIdMAX, PRIuMAX,   */
-                                /* and, transitively, <stdint.h> so that    */
-                                /* tests get SIZE_MAX and UINT32_MAX        */
+#include <stdio.h>
+#include <string.h>
+#include <stddef.h>
+#include <inttypes.h>
 
-/*
- * ---------------------------------------------------------------------------
- * Colour control (section 7)
- * ---------------------------------------------------------------------------
- */
 #ifndef TESTUTIL_COLOUR
 # define TESTUTIL_COLOUR 1
 #endif
@@ -164,9 +97,8 @@
 
 /*
  * How many bytes of each buffer a failing TEST_ASSERT_MEM_EQ() dumps.  The
- * suite's fixtures are a handful of bytes wide, so this only ever matters as a
- * guard against one pathological call flooding the CTest log; the offset of
- * the first difference is always reported, in bounds or not.
+ * cap only matters as a guard against one pathological call flooding the log;
+ * the offset of the first difference is always reported, in bounds or not.
  */
 #ifndef TESTUTIL_HEXDUMP_MAX
 # define TESTUTIL_HEXDUMP_MAX 64
@@ -182,70 +114,42 @@
 #endif
 
 /*
- * ---------------------------------------------------------------------------
- * Per-program state.  Every object below has internal linkage: each test
- * executable owns its own copy, which is what makes "ctest -j N" safe.
- *
- * These are TENTATIVE definitions -- no initialisers -- and that is
- * deliberate, for two independent reasons:
- *
- *   1. Zero is exactly the right starting state.  `ret` therefore starts
- *      false, so a program that asserts nothing fails even through the
- *      "return !ret;" idiom of section 2, not merely through TEST_REPORT().
- *
- *   2. A tentative definition may legally be repeated, so a test source that
- *      declares `static int ret;` or `static int test = 1;` of its own still
- *      compiles.  An initialiser here would turn that into a redefinition
- *      error.
- *
- * They are referenced by testutil_count() below, and that reference is what
- * keeps -Wunused-variable quiet in a translation unit that happens never to
- * touch them directly.  Please do not "tidy it away".
- * ---------------------------------------------------------------------------
+ * The four objects below are TENTATIVE definitions -- no initialisers -- for
+ * two independent reasons.  Zero is the right starting state, so a program
+ * that asserts nothing fails even through "return !ret;".  And a tentative
+ * definition may legally be repeated, so a test source that declares its own
+ * "static int ret;" still compiles, which an initialiser here would break.
+ * testutil_count() references all four, which is what keeps
+ * -Wunused-variable quiet in a translation unit that never touches them.
  */
 
-/* Truth of the most recent assertion: the project's `test` variable. */
 static int test;
 
 /*
  * "At least one assertion has run and none has failed."  Refreshed by every
  * assertion so that "TEST_ASSERT(e); ret &= test;" stays literal while the
- * value itself stays derived from the counters below rather than from a flag a
- * test could forget to clear.
+ * value itself stays derived from the counters rather than from a flag a test
+ * could forget to clear.
  */
 static int ret;
 
-/* The authoritative state: how many assertions ran, and how many disagreed. */
 static unsigned long testutil_asserted;
 static unsigned long testutil_mismatched;
 
 /*
- * ---------------------------------------------------------------------------
- * Internal plumbing.  Everything is "static inline" rather than plain
- * "static": an unused static inline function draws no -Wunused-function
- * diagnostic, so a test that uses only two of these macros still compiles
- * warning-free.
- *
- * Note the absence of single-letter identifiers below.  A one-letter parameter
- * or local in a shared header shadows any file-scope object a test happens to
- * give the same name, and -Wshadow then reports the collision against THIS
- * file, which is a confusing place for a reader to land.  Including this header
- * first, as every test does, already avoids that -- the test's own objects do
- * not exist yet at this point -- but spelling the names out makes the header
- * immune to include order as well as easier to read.
- * ---------------------------------------------------------------------------
+ * The helpers below are "static inline" rather than plain "static" so that an
+ * unused one draws no -Wunused-function diagnostic: a test using only two of
+ * these macros still compiles warning-free.
  */
 
-/* Never hand a null label to printf("%s"); say so instead. */
 static inline const char *testutil_text(const char *str)
 {
     return str == NULL ? "(null)" : str;
 }
 
 /*
- * Record one verdict.  This is the single place where the counters, `test` and
- * `ret` are updated, so the exit-status contract of section 1 has exactly one
- * implementation.
+ * Record one verdict.  The single place where the counters, `test` and `ret`
+ * are updated, so the exit-status contract has exactly one implementation.
  */
 static inline void testutil_count(int ok)
 {
@@ -253,14 +157,43 @@ static inline void testutil_count(int ok)
     if (!ok)
         testutil_mismatched++;
     test = ok ? 1 : 0;
-    ret = testutil_mismatched == 0UL ? 1 : 0;
+    ret = testutil_asserted != 0UL && testutil_mismatched == 0UL ? 1 : 0;
 }
 
-/* Print the coloured verdict tag that opens every result line. */
 static inline void testutil_tag(int ok)
 {
     printf("%s[%s]%s ", ok ? TESTUTIL_GREEN : TESTUTIL_RED,
            ok ? "PASS" : "FAIL", TESTUTIL_OFF);
+}
+
+/*
+ * Open a result line: the verdict tag, then -- on a failure only -- the
+ * "file:line: " the assertion was written at.  Every worker below starts here,
+ * so that rule has one implementation and cannot drift between assertion
+ * kinds.
+ */
+static inline void testutil_tag_at(int ok, const char *file, int line)
+{
+    testutil_tag(ok);
+    if (!ok)
+        printf("%s:%d: ", testutil_text(file), line);
+}
+
+/*
+ * The only %p in this file, and a language requirement rather than a
+ * preference: C99 7.19.6.1 defines the p conversion for an argument of type
+ * "void *", a variadic argument gets no implicit conversion, and "const
+ * void *" is a different type.  The workers keep their "const void *"
+ * parameters, so no caller has to cast away a qualifier it legitimately
+ * holds, and the conversion happens here alone -- safe here because printf
+ * formats the pointer's VALUE and never dereferences it.  Do not "fix" the
+ * -Wcast-qual this line attracts by giving the workers "void *" parameters:
+ * that pushes the same cast out to every call site and strips const from the
+ * caller's own data on the way.
+ */
+static inline void testutil_print_ptr(const void *ptr)
+{
+    printf("%p", (void *)ptr);
 }
 
 /* Print a string as a quoted literal, or as (null) when there is none. */
@@ -291,10 +224,6 @@ static inline void testutil_print_hex(const char *field,
     printf("\n");
 }
 
-/*
- * Mark the differing byte positions underneath the two hex rows: "^^" where
- * the buffers disagree, ".." where they agree.
- */
 static inline void testutil_print_marks(const unsigned char *pact,
                                         const unsigned char *pexp,
                                         size_t shown)
@@ -311,29 +240,38 @@ static inline void testutil_print_marks(const unsigned char *pact,
  * ---------------------------------------------------------------------------
  * The assertion workers.  Each one records the verdict, prints a single
  * self-diagnosing line, and returns the verdict so that an assertion may also
- * be used in an expression.  A failing line always carries the label, the
- * actual value AND the expected value, so a CTest failure is diagnosable
- * straight from the log, with no debugger and no rerun.
+ * be used in an expression.  A failing line always carries the source location
+ * of the assertion, the label, the actual value AND the expected value, so a
+ * CTest failure is diagnosable straight from the log, with no debugger and no
+ * rerun.
+ *
+ * `file` and `line` come first in every signature and are always the caller's
+ * own __FILE__ and __LINE__, supplied by the TEST_ASSERT_ macros at the foot
+ * of this file.  They are recorded nowhere and used for nothing but the
+ * failure line, so passing a null `file` degrades to "(null)" rather than
+ * misbehaving.
  * ---------------------------------------------------------------------------
  */
 
 /* Backs TEST_ASSERT(): `expr` is the stringified expression. */
-static inline int testutil_check_bool(const char *expr, int ok)
+static inline int testutil_check_bool(const char *file, int line,
+                                      const char *expr, int ok)
 {
     testutil_count(ok);
-    testutil_tag(ok);
+    testutil_tag_at(ok, file, line);
     printf("%s\n", testutil_text(expr));
     return ok;
 }
 
 /* Backs TEST_ASSERT_INT_EQ(): signed comparison at maximum width. */
-static inline int testutil_check_int(const char *label, intmax_t actual,
+static inline int testutil_check_int(const char *file, int line,
+                                     const char *label, intmax_t actual,
                                      intmax_t expected)
 {
     int ok = actual == expected;
 
     testutil_count(ok);
-    testutil_tag(ok);
+    testutil_tag_at(ok, file, line);
     if (ok)
         printf("%s: %" PRIdMAX "\n", testutil_text(label), actual);
     else
@@ -343,17 +281,18 @@ static inline int testutil_check_int(const char *label, intmax_t actual,
 }
 
 /*
- * Backs TEST_ASSERT_UINT_EQ(): unsigned comparison at maximum width.  Values
- * such as UINT32_MAX travel through as themselves, with no sign extension,
- * because the macro casts to uintmax_t before the call.
+ * Unsigned comparison at maximum width.  Values such as UINT32_MAX travel
+ * through as themselves, with no sign extension, because the macro casts to
+ * uintmax_t before the call.
  */
-static inline int testutil_check_uint(const char *label, uintmax_t actual,
+static inline int testutil_check_uint(const char *file, int line,
+                                      const char *label, uintmax_t actual,
                                       uintmax_t expected)
 {
     int ok = actual == expected;
 
     testutil_count(ok);
-    testutil_tag(ok);
+    testutil_tag_at(ok, file, line);
     if (ok)
         printf("%s: %" PRIuMAX "\n", testutil_text(label), actual);
     else
@@ -363,17 +302,18 @@ static inline int testutil_check_uint(const char *label, uintmax_t actual,
 }
 
 /*
- * Backs TEST_ASSERT_SIZE_EQ().  size_t has its own worker and its own "%zu"
- * conversion on purpose: "%lu" is wrong wherever size_t is not unsigned long,
- * and a cast down to some other width could silently hide a mismatch.
+ * size_t has its own worker and its own "%zu" conversion on purpose: "%lu" is
+ * wrong wherever size_t is not unsigned long, and a cast down to some other
+ * width could silently hide a mismatch.
  */
-static inline int testutil_check_size(const char *label, size_t actual,
+static inline int testutil_check_size(const char *file, int line,
+                                      const char *label, size_t actual,
                                       size_t expected)
 {
     int ok = actual == expected;
 
     testutil_count(ok);
-    testutil_tag(ok);
+    testutil_tag_at(ok, file, line);
     if (ok)
         printf("%s: %zu\n", testutil_text(label), actual);
     else
@@ -383,80 +323,100 @@ static inline int testutil_check_size(const char *label, size_t actual,
 }
 
 /*
- * Backs TEST_ASSERT_PTR_EQ(): pointer IDENTITY, which is a different claim
- * from value equality and is the right one wherever a contract says a pointer
- * is passed through rather than copied.
+ * Pointer IDENTITY, which is a different claim from value equality and is the
+ * right one wherever a contract says a pointer is passed through rather than
+ * copied.
  */
-static inline int testutil_check_ptr_eq(const char *label, const void *actual,
+static inline int testutil_check_ptr_eq(const char *file, int line,
+                                        const char *label, const void *actual,
                                         const void *expected)
 {
     int ok = actual == expected;
 
     testutil_count(ok);
-    testutil_tag(ok);
-    if (ok)
-        printf("%s: %p\n", testutil_text(label), actual);
-    else
-        printf("%s: actual %p, expected %p\n", testutil_text(label),
-               actual, expected);
+    testutil_tag_at(ok, file, line);
+    printf("%s: ", testutil_text(label));
+    if (ok) {
+        testutil_print_ptr(actual);
+    } else {
+        printf("actual ");
+        testutil_print_ptr(actual);
+        printf(", expected ");
+        testutil_print_ptr(expected);
+    }
+    printf("\n");
     return ok;
 }
 
 /* Backs TEST_ASSERT_PTR_NE(): the two pointers must NOT be the same object. */
-static inline int testutil_check_ptr_ne(const char *label, const void *actual,
+static inline int testutil_check_ptr_ne(const char *file, int line,
+                                        const char *label, const void *actual,
                                         const void *other)
 {
     int ok = actual != other;
 
     testutil_count(ok);
-    testutil_tag(ok);
-    if (ok)
-        printf("%s: %p, distinct from %p\n", testutil_text(label),
-               actual, other);
-    else
-        printf("%s: actual %p, expected any pointer other than %p\n",
-               testutil_text(label), actual, other);
+    testutil_tag_at(ok, file, line);
+    printf("%s: ", testutil_text(label));
+    if (ok) {
+        testutil_print_ptr(actual);
+        printf(", distinct from ");
+        testutil_print_ptr(other);
+    } else {
+        printf("actual ");
+        testutil_print_ptr(actual);
+        printf(", expected any pointer other than ");
+        testutil_print_ptr(other);
+    }
+    printf("\n");
     return ok;
 }
 
 /* Backs TEST_ASSERT_PTR_NULL(). */
-static inline int testutil_check_ptr_null(const char *label,
+static inline int testutil_check_ptr_null(const char *file, int line,
+                                          const char *label,
                                           const void *actual)
 {
     int ok = actual == NULL;
 
     testutil_count(ok);
-    testutil_tag(ok);
-    if (ok)
-        printf("%s: (null)\n", testutil_text(label));
-    else
-        printf("%s: actual %p, expected (null)\n", testutil_text(label),
-               actual);
+    testutil_tag_at(ok, file, line);
+    printf("%s: ", testutil_text(label));
+    if (ok) {
+        printf("(null)");
+    } else {
+        printf("actual ");
+        testutil_print_ptr(actual);
+        printf(", expected (null)");
+    }
+    printf("\n");
     return ok;
 }
 
 /* Backs TEST_ASSERT_PTR_NOT_NULL(). */
-static inline int testutil_check_ptr_not_null(const char *label,
+static inline int testutil_check_ptr_not_null(const char *file, int line,
+                                              const char *label,
                                               const void *actual)
 {
     int ok = actual != NULL;
 
     testutil_count(ok);
-    testutil_tag(ok);
+    testutil_tag_at(ok, file, line);
+    printf("%s: ", testutil_text(label));
     if (ok)
-        printf("%s: %p\n", testutil_text(label), actual);
+        testutil_print_ptr(actual);
     else
-        printf("%s: actual (null), expected a non-null pointer\n",
-               testutil_text(label));
+        printf("actual (null), expected a non-null pointer");
+    printf("\n");
     return ok;
 }
 
 /*
- * Backs TEST_ASSERT_STR_EQ().  Null-safe on both sides: two null pointers
- * compare equal, one null pointer never matches a string, and neither case
- * reaches strcmp().
+ * Null-safe on both sides: two null pointers compare equal, one null pointer
+ * never matches a string, and neither case reaches strcmp().
  */
-static inline int testutil_check_str_eq(const char *label, const char *actual,
+static inline int testutil_check_str_eq(const char *file, int line,
+                                        const char *label, const char *actual,
                                         const char *expected)
 {
     int ok;
@@ -467,7 +427,7 @@ static inline int testutil_check_str_eq(const char *label, const char *actual,
         ok = strcmp(actual, expected) == 0;
 
     testutil_count(ok);
-    testutil_tag(ok);
+    testutil_tag_at(ok, file, line);
     printf("%s: ", testutil_text(label));
     if (ok) {
         testutil_print_str(actual);
@@ -482,21 +442,39 @@ static inline int testutil_check_str_eq(const char *label, const char *actual,
 }
 
 /*
- * Backs TEST_ASSERT_MEM_EQ(): byte-level comparison with a readable hex diff.
- *
- * Two deliberate choices worth knowing about:
+ * Byte-level comparison with a readable hex diff.  Two deliberate choices:
  *
  *   - A null buffer with a non-zero length is reported as a mismatch, never
  *     passed to memcmp().  A fixture bug must produce a diagnosis, not a
  *     segmentation fault in the harness.
  *
- *   - A zero-length comparison PASSES, with the vacuity spelled out in the
- *     output.  Comparing zero bytes is a legitimate thing for a test of a
- *     zero-capacity destination to do, so failing it would break a real case;
- *     printing "0 bytes compared" keeps the vacuity visible in the log
- *     instead of hiding it behind a bare PASS.
+ *   - A zero-length comparison FAILS.  It is the one call this header can be
+ *     handed that inspects neither operand, so counting it as a pass would
+ *     leave a hole in the no-smoke contract this header opens with -- a hole
+ *     the size of a whole test program, since a binary whose only assertion
+ *     compared no bytes would exit zero having proved nothing.  Reporting it
+ *     as a mismatch closes that hole, and the diagnostic says so rather than
+ *     leaving a reader to guess why a comparison "failed".
+ *
+ *     A zero-capacity destination is a real fixture and does need testing --
+ *     provnum_set_size_t() into an OSSL_PARAM whose data_size is 0 is one of
+ *     the cases the suite must cover -- but nothing about it is expressible as
+ *     a comparison of zero bytes.  What that case asserts is the return code
+ *     (PROVNUM_E_TOOBIG), the return_size (0) and, where a buffer exists at
+ *     all, that its bytes still hold the sentinel they were seeded with:
+ *
+ *         rc = provnum_set_size_t(&param, 0);
+ *         TEST_ASSERT_INT_EQ("zero-capacity rc", rc, PROVNUM_E_TOOBIG);
+ *         TEST_ASSERT_SIZE_EQ("zero-capacity return_size",
+ *                             param.return_size, (size_t)0);
+ *         TEST_ASSERT_MEM_EQ("buffer untouched", buffer, untouched,
+ *                            sizeof buffer);
+ *
+ *     Each of those inspects a value, which is the property that makes them
+ *     assertions at all.
  */
-static inline int testutil_check_mem_eq(const char *label, const void *actual,
+static inline int testutil_check_mem_eq(const char *file, int line,
+                                        const char *label, const void *actual,
                                         const void *expected, size_t len)
 {
     const unsigned char *pact = (const unsigned char *)actual;
@@ -510,15 +488,18 @@ static inline int testutil_check_mem_eq(const char *label, const void *actual,
     int ok;
 
     if (len == 0) {
-        testutil_count(1);
-        testutil_tag(1);
-        printf("%s: 0 bytes compared\n", testutil_text(label));
-        return 1;
+        testutil_count(0);
+        testutil_tag_at(0, file, line);
+        printf("%s: a comparison of 0 bytes inspects neither buffer and is"
+               " therefore not an assertion; assert the return code, the"
+               " return_size and the sentinel contents instead\n",
+               testutil_text(label));
+        return 0;
     }
 
     if (pact == NULL || pexp == NULL) {
         testutil_count(0);
-        testutil_tag(0);
+        testutil_tag_at(0, file, line);
         printf("%s: cannot compare %zu bytes, actual is %s and expected is"
                " %s\n", testutil_text(label), len,
                pact == NULL ? "(null)" : "a buffer",
@@ -536,7 +517,7 @@ static inline int testutil_check_mem_eq(const char *label, const void *actual,
             }
 
     testutil_count(ok);
-    testutil_tag(ok);
+    testutil_tag_at(ok, file, line);
     if (ok) {
         printf("%s: %zu bytes match\n", testutil_text(label), len);
         return ok;
@@ -560,19 +541,20 @@ static inline int testutil_check_mem_eq(const char *label, const void *actual,
 }
 
 /*
- * ---------------------------------------------------------------------------
- * The reporter.  This is where section 1's contract is cashed in: the returned
- * exit status is a function of the counters and of nothing else.
- * ---------------------------------------------------------------------------
+ * Where the exit-status contract is cashed in: the returned status is a
+ * function of the counters and of nothing else.  It takes `file` and `line`
+ * for the reason the workers do -- the zero-assertion verdict is a failure,
+ * and here the location is the TEST_REPORT() call site at the end of main().
  */
-static inline int testutil_report(const char *name)
+static inline int testutil_report(const char *file, int line, const char *name)
 {
     int failed = testutil_mismatched != 0UL || testutil_asserted == 0UL;
 
-    if (testutil_asserted == 0UL)
-        printf("%s[FAIL]%s %s: no assertions executed -- a test that asserts"
-               " nothing cannot pass\n", TESTUTIL_RED, TESTUTIL_OFF,
-               testutil_text(name));
+    if (testutil_asserted == 0UL) {
+        testutil_tag_at(0, file, line);
+        printf("%s: no assertions executed -- a test that asserts nothing"
+               " cannot pass\n", testutil_text(name));
+    }
 
     printf("%s%s: %lu assertions, %lu mismatches%s\n",
            failed ? TESTUTIL_RED : TESTUTIL_GREEN, testutil_text(name),
@@ -582,11 +564,8 @@ static inline int testutil_report(const char *name)
 }
 
 /*
- * ===========================================================================
- * The public interface.
- *
- * Each macro expands to exactly one function call.  That is what makes every
- * argument evaluated exactly once, and it is why none of them needs a
+ * The public interface.  Each macro expands to exactly one function call, so
+ * every argument is evaluated exactly once and none needs a
  * do { ... } while (0) wrapper to behave as a statement: all of
  *
  *     TEST_ASSERT(rc == 1); ret &= test;
@@ -594,82 +573,67 @@ static inline int testutil_report(const char *name)
  *     failed = !TEST_ASSERT_PTR_NULL("handle", h);
  *
  * do what they look like.  Every parameter is used parenthesised, so the
- * unparenthesised PROVNUM_E_* codes of section 5 are safe to pass.
- *
- * Pointer arguments are cast to "const void *" rather than to "void *": %p is
- * clean with a const-qualified void pointer, and casting the qualifier away
- * would be a gratuitous lie about the caller's data.
- * ===========================================================================
+ * unparenthesised PROVNUM_E_ codes are safe to pass.
  */
 
 /*
- * The project's own assertion: records the truth of `e` in `test` and prints
- * the stringified expression.  This is also the universal escape hatch -- any
- * claim at all can be phrased as TEST_ASSERT(claim) -- but prefer a typed
- * macro below when there is one, because those print the actual and the
- * expected value, and this one can only print the source text.
+ * Records the truth of `e` in `test` and prints the stringified expression.
+ * Also the universal escape hatch -- any claim at all can be phrased as
+ * TEST_ASSERT(claim) -- but prefer a typed macro below when there is one,
+ * because those print the actual and the expected value and this one can only
+ * print the source text.
  */
 #define TEST_ASSERT(e)                                                      \
-    testutil_check_bool(#e, (e) ? 1 : 0)
+    (test = testutil_check_bool(__FILE__, __LINE__, #e, (e) ? 1 : 0))
 
-/* Signed integers, up to intmax_t: return codes, line numbers, wait status. */
 #define TEST_ASSERT_INT_EQ(label, actual, expected)                         \
-    testutil_check_int((label), (intmax_t)(actual), (intmax_t)(expected))
+    (test = testutil_check_int(__FILE__, __LINE__, (label),                 \
+                               (intmax_t)(actual), (intmax_t)(expected)))
 
-/* Unsigned integers, up to uintmax_t: reason codes, flags, counters. */
 #define TEST_ASSERT_UINT_EQ(label, actual, expected)                        \
-    testutil_check_uint((label), (uintmax_t)(actual), (uintmax_t)(expected))
+    (test = testutil_check_uint(__FILE__, __LINE__, (label),                \
+                                (uintmax_t)(actual),                        \
+                                (uintmax_t)(expected)))
 
-/* size_t specifically: sizes, capacities, and OSSL_PARAM return_size. */
 #define TEST_ASSERT_SIZE_EQ(label, actual, expected)                        \
-    testutil_check_size((label), (size_t)(actual), (size_t)(expected))
+    (test = testutil_check_size(__FILE__, __LINE__, (label),                \
+                                (size_t)(actual), (size_t)(expected)))
 
-/* Pointer identity, for contracts that pass a pointer through unchanged. */
 #define TEST_ASSERT_PTR_EQ(label, actual, expected)                         \
-    testutil_check_ptr_eq((label), (const void *)(actual),                  \
-                          (const void *)(expected))
+    (test = testutil_check_ptr_eq(__FILE__, __LINE__, (label),              \
+                                  (const void *)(actual),                   \
+                                  (const void *)(expected)))
 
-/* Pointer distinctness, for contracts that must hand back a fresh object. */
 #define TEST_ASSERT_PTR_NE(label, actual, other)                            \
-    testutil_check_ptr_ne((label), (const void *)(actual),                  \
-                          (const void *)(other))
+    (test = testutil_check_ptr_ne(__FILE__, __LINE__, (label),              \
+                                  (const void *)(actual),                   \
+                                  (const void *)(other)))
 
-/* The pointer must be null. */
 #define TEST_ASSERT_PTR_NULL(label, actual)                                 \
-    testutil_check_ptr_null((label), (const void *)(actual))
+    (test = testutil_check_ptr_null(__FILE__, __LINE__, (label),            \
+                                    (const void *)(actual)))
 
-/* The pointer must not be null. */
 #define TEST_ASSERT_PTR_NOT_NULL(label, actual)                             \
-    testutil_check_ptr_not_null((label), (const void *)(actual))
+    (test = testutil_check_ptr_not_null(__FILE__, __LINE__, (label),        \
+                                        (const void *)(actual)))
 
-/* String contents, null-safe on both sides. */
 #define TEST_ASSERT_STR_EQ(label, actual, expected)                         \
-    testutil_check_str_eq((label), (actual), (expected))
-
-/* Byte-for-byte buffer equality, with a hex diff on mismatch. */
-#define TEST_ASSERT_MEM_EQ(label, actual, expected, len)                    \
-    testutil_check_mem_eq((label), (const void *)(actual),                  \
-                          (const void *)(expected), (size_t)(len))
+    (test = testutil_check_str_eq(__FILE__, __LINE__, (label),              \
+                                  (actual), (expected)))
 
 /*
- * Print the one-line summary and yield the process exit status.  Use it as the
- * final statement of main():
- *
- *     int main(void)
- *     {
- *         int rc;
- *         size_t val = 0;
- *         OSSL_PARAM p = { NULL, OSSL_PARAM_UNSIGNED_INTEGER, buf, 1, 0 };
- *
- *         rc = provnum_get_size_t(&val, &p);
- *         TEST_ASSERT_INT_EQ("1-byte source rc", rc, 1); ret &= test;
- *         TEST_ASSERT_SIZE_EQ("1-byte source value", val, (size_t)5);
- *
- *         return TEST_REPORT("test_num_get");
- *     }
+ * Byte-for-byte buffer equality, with a hex diff on mismatch.  A `len` of
+ * zero is a FAILURE and not a vacuous pass: testutil_check_mem_eq() says why
+ * and what a zero-capacity case should assert instead.
  */
+#define TEST_ASSERT_MEM_EQ(label, actual, expected, len)                    \
+    (test = testutil_check_mem_eq(__FILE__, __LINE__, (label),              \
+                                  (const void *)(actual),                   \
+                                  (const void *)(expected),                 \
+                                  (size_t)(len)))
+
+/* Print the one-line summary and yield the process exit status. */
 #define TEST_REPORT(name)                                                   \
-    testutil_report(name)
+    testutil_report(__FILE__, __LINE__, (name))
 
 #endif                          /* LIBPROV_TESTS_TESTUTIL_H */
-
