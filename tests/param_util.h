@@ -680,11 +680,19 @@ static PARAMUTIL_MAYBE_UNUSED int param_identical(const OSSL_PARAM *param,
  * processed.  _DEFAULT_SOURCE rather than a _POSIX_C_SOURCE level, because
  * MAP_ANONYMOUS is not a POSIX flag at all -- it is a Linux and BSD extension,
  * so asking only for POSIX would not necessarily reveal it.  MEASURED on this
- * host: glibc declares mmap(), mprotect(), munmap(), fork(), waitpid() and
- * sysconf() and defines MAP_ANONYMOUS under a bare -std=c99 with no macro at
- * all, so the requirement buys portability rather than fixing anything here.
- * The check below turns a C library that does gate them into one diagnosable
- * compile error naming the cause, rather than an obscure cascade.
+ * host: glibc declares mmap(), mprotect(), munmap(), fork(), waitpid(),
+ * setrlimit() and sysconf() and defines MAP_ANONYMOUS under a bare -std=c99
+ * with no macro at all, so the requirement buys portability rather than fixing
+ * anything here.  The check below turns a C library that does gate them into
+ * one diagnosable compile error naming the cause, rather than an obscure
+ * cascade.
+ *
+ * <sys/resource.h> is here for the setrlimit(RLIMIT_CORE) call in the forked
+ * child inside param_guard_run(): see the comment there for the artifact this
+ * harness would otherwise leave behind on every run.  Like the rest of this
+ * block it sits INSIDE the LIBPROV_TEST_GUARD_PAGES guard, so a translation
+ * unit that does not ask for the oracle is not made to depend on a POSIX
+ * header it never needs.
  */
 
 # include <errno.h>
@@ -692,6 +700,7 @@ static PARAMUTIL_MAYBE_UNUSED int param_identical(const OSSL_PARAM *param,
 # include <unistd.h>
 # include <sys/mman.h>
 # include <sys/wait.h>
+# include <sys/resource.h>
 
 # if !defined(MAP_ANONYMOUS) && defined(MAP_ANON)
 /* The older BSD spelling of the same flag. */
@@ -935,6 +944,12 @@ param_guard_record_close(struct param_guard_record *record)
  * flushed BEFORE the fork, so nothing already buffered by the parent is
  * duplicated by the child, and the child leaves through _exit() rather than
  * exit(), so it runs no atexit handler and flushes no stream of its own.
+ *
+ * THE INVARIANT FOR EVERY FORK SITE IN THIS SUITE: a child that may be killed
+ * by a core-dumping signal must zero its own RLIMIT_CORE first.  This harness
+ * and the abort harness in tests/test_err_death.c are the only two fork sites
+ * the suite has, and both now honour it; a third would have to as well.  See
+ * the child branch below for the measurement that motivates it.
  */
 static PARAMUTIL_MAYBE_UNUSED struct param_guard_verdict
 param_guard_run(param_guard_body *body, struct param_guard_record *record,
@@ -963,6 +978,49 @@ param_guard_run(param_guard_body *body, struct param_guard_record *record,
         return verdict;
     }
     if (child == 0) {
+        /*
+         * The child.  param_guard_body_self_test() below is REQUIRED to fault,
+         * and a fault is SIGSEGV, which is a core-dumping signal -- so an
+         * inherited RLIMIT_CORE lets that one EXPECTED death write a core image
+         * on every run.  MEASURED before this call existed, with the host's
+         * /proc/sys/kernel/core_pattern at its default and `ulimit -c`
+         * unlimited: one direct run of test_num_get left one dump of 466944
+         * bytes, one run of test_num_set left another, a full `ctest` left two
+         * (~934 KB), and `ctest -j 8 --repeat until-fail:2` left four -- linear
+         * in the number of runs and therefore unbounded on a CI machine.  On a
+         * host whose pattern is the default bare "core" the images land in the
+         * CTest working directory instead, where they also show up in
+         * git status.  AAP 0.7.2 requires a run to leave no artifact behind, so
+         * the limit is dropped to zero here, in the child only, before anything
+         * can fault.  It is done in this SHARED harness rather than in each
+         * consumer so that tests/test_num_get.c and tests/test_num_set.c are
+         * both covered by one site and a third consumer cannot forget it.
+         *
+         * This changes only whether the kernel writes the image.  MEASURED with
+         * a probe replicating this child exactly: with the drop and without it
+         * the child is killed by the same signal (SIGSEGV) and WIFEXITED stays
+         * 0, so `completed` -- the one predicate the parent asserts, and which
+         * is deliberately "exited normally with status 0" rather than "was not
+         * signalled" -- is 0 either way.  Only the kernel's `core_dumping` flag
+         * changes, from set to clear.  The parent's own limits are untouched,
+         * because setrlimit() applies to the calling process and this is after
+         * fork().
+         *
+         * The result is deliberately cast away rather than tested, matching
+         * tests/test_err_death.c.  A host that refused to lower a soft limit --
+         * which POSIX does not permit for a decrease -- would merely go back to
+         * writing the dumps it wrote before; that is a hygiene regression, not
+         * a wrong verdict, and failing the guard-page contract over it would be
+         * a false negative.  Nor may the child bail out here: it has to go on to
+         * run its body, because the parent's whole verdict is about how that
+         * body ended.
+         */
+        struct rlimit guard_no_core;
+
+        guard_no_core.rlim_cur = 0;
+        guard_no_core.rlim_max = 0;
+        (void)setrlimit(RLIMIT_CORE, &guard_no_core);
+
         body(record, guard);
         _exit(0);
     }
