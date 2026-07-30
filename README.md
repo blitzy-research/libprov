@@ -483,6 +483,19 @@ stating precisely, because it is narrower than it once was:
     three variants were built and run to confirm it.  What this tree adds is
     the diagnosis: the same removals name `paramsign` at `num.c:30`, and the
     caller above it, instead of reporting only a signal number.
+
+    What that guard does not cover -- and what no fixture here may pin,
+    because a fixture that did would fail against the library as it stands
+    -- is a payload the caller *declares* but that cannot be read.
+    `paramsign()` runs at `num.c:158`, inside the descriptor initialiser,
+    before `provnum_copy()` reaches its type whitelist at `num.c:61-65`, so
+    a wrong-type descriptor pointing at an unreadable address with a
+    declared size of `1` faults for all five non-integer types on both
+    getters, where the same descriptor with a declared size of `0` returns
+    `-1`.  The guard at `num.c:22-23` is exactly the repair the frozen plan
+    specifies, and widening it is excluded by that plan; the reasoning, the
+    reproduction and the citations are recorded once, at
+    `test_get_wrong_types()` in `tests/test_num_get.c`.
 -   **`num.c`'s zero-capacity clamp** is caught by the default suite too, and
     what catches it is specific: reverting the clamp makes `provnum_set_*`
     answer `1` where `-2` is owed, and `test_num_set` reports

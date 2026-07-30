@@ -1145,17 +1145,28 @@ static int test_get_wrong_types(void)
         const char *rc_label;
         const char *untouched_label;
         const char *param_label;
+        const char *int_rc_label;
+        const char *int_untouched_label;
+        const char *int_param_label;
     } wrong[] = {
         { OSSL_PARAM_REAL,
-          "REAL rc", "REAL untouched", "REAL param" },
+          "REAL rc", "REAL untouched", "REAL param",
+          "REAL int rc", "REAL int untouched", "REAL int param" },
         { OSSL_PARAM_UTF8_STRING,
-          "UTF8_STRING rc", "UTF8_STRING untouched", "UTF8_STRING param" },
+          "UTF8_STRING rc", "UTF8_STRING untouched", "UTF8_STRING param",
+          "UTF8_STRING int rc", "UTF8_STRING int untouched",
+          "UTF8_STRING int param" },
         { OSSL_PARAM_OCTET_STRING,
-          "OCTET_STRING rc", "OCTET_STRING untouched", "OCTET_STRING param" },
+          "OCTET_STRING rc", "OCTET_STRING untouched", "OCTET_STRING param",
+          "OCTET_STRING int rc", "OCTET_STRING int untouched",
+          "OCTET_STRING int param" },
         { OSSL_PARAM_UTF8_PTR,
-          "UTF8_PTR rc", "UTF8_PTR untouched", "UTF8_PTR param" },
+          "UTF8_PTR rc", "UTF8_PTR untouched", "UTF8_PTR param",
+          "UTF8_PTR int rc", "UTF8_PTR int untouched", "UTF8_PTR int param" },
         { OSSL_PARAM_OCTET_PTR,
-          "OCTET_PTR rc", "OCTET_PTR untouched", "OCTET_PTR param" }
+          "OCTET_PTR rc", "OCTET_PTR untouched", "OCTET_PTR param",
+          "OCTET_PTR int rc", "OCTET_PTR int untouched",
+          "OCTET_PTR int param" }
     };
     /*
      * One buffer serves every iteration, and it is READABLE on purpose.
@@ -1179,7 +1190,9 @@ static int test_get_wrong_types(void)
     for (k = 0; k < sizeof wrong / sizeof wrong[0]; k++) {
         OSSL_PARAM param;
         size_t dest = param_sentinel_size_t();
+        int idest = param_sentinel_int();
         struct size_t_result got;
+        struct int_result igot;
 
         param_build(&param, wrong[k].data_type, src, sizeof src);
 
@@ -1190,6 +1203,28 @@ static int test_get_wrong_types(void)
                             param_sentinel_size_t());
         ret &= test;
         TEST_ASSERT_INT_EQ(wrong[k].param_label, got.param_unchanged, 1);
+        ret &= test;
+
+        /*
+         * Every one of the five types through the OTHER instantiation as well,
+         * in the same iteration and over the same descriptor -- which the
+         * assertion above has just proved the first call left byte-identical.
+         * Both generated functions share provnum_copy()'s whitelist
+         * (num.c:61-65, reached from the one macro body at num.c:149-178), so
+         * this half is what proves the refusal belongs to the shared body
+         * rather than to one generated function, and it proves it for all five
+         * types rather than a sample: a whitelist that admitted a type on one
+         * instantiation only could not pass here.  The int destination carries
+         * its own sentinel so "untouched" is asserted independently for each.
+         */
+        igot = call_get_int(&idest, &param);
+        TEST_ASSERT_INT_EQ(wrong[k].int_rc_label, igot.rc,
+                           PROVNUM_E_WRONG_TYPE);
+        ret &= test;
+        TEST_ASSERT_INT_EQ(wrong[k].int_untouched_label, igot.value,
+                           param_sentinel_int());
+        ret &= test;
+        TEST_ASSERT_INT_EQ(wrong[k].int_param_label, igot.param_unchanged, 1);
         ret &= test;
     }
 
@@ -1210,22 +1245,80 @@ static int test_get_wrong_types(void)
      * The guard at num.c:22-23 covers exactly the shapes where the read would
      * be outside an object -- a null payload and a declared size of zero -- and
      * pinning anything beyond them would be hardening the library rather than
-     * testing it.  A
-     * poisoned wrong-type fixture would do precisely that: it withholds a
-     * payload the descriptor promises, so it would fail against correct code.
-     * The empty-source shortcut is the one ordering this suite CAN pin that
-     * way, and test_get_null_and_empty() does pin it, with
+     * testing it.  A poisoned wrong-type fixture would do precisely that: it
+     * withholds a payload the descriptor promises, so it would fail against
+     * correct code.  The empty-source shortcut is the one ordering this suite
+     * CAN pin that way, and test_get_null_and_empty() does pin it, with
      * param_build_poisoned(&param, OSSL_PARAM_INTEGER, 0).
+     *
+     * KNOWN LIMITATION, RECORDED DELIBERATELY.  IT IS NOT A GAP IN THIS FILE.
+     *
+     * Two of the five types above are not covered by the paragraph before
+     * last.  <openssl/core.h> documents that for OSSL_PARAM_UTF8_PTR and
+     * OSSL_PARAM_OCTET_PTR "only pointers are manipulated for this type", and
+     * <openssl/params.h> takes the REFERENCED buffer's size for them --
+     * OSSL_PARAM_construct_utf8_ptr(key, char **buf, size_t bsize) and
+     * OSSL_PARAM_get_octet_ptr(p, val, size_t *used_len).  For those two,
+     * data_size describes what the pointer refers to rather than the pointer
+     * object at data, so data_size - 1 need not index inside that object even
+     * when the descriptor is well formed by OpenSSL's own definition.  The same
+     * read is reachable with no pointer-type subtlety at all, from a caller
+     * whose payload address is simply not readable:
+     *
+     *   void *pg = mmap(NULL, 4096, PROT_NONE, MAP_PRIVATE|MAP_ANONYMOUS,
+     *                   -1, 0);
+     *   OSSL_PARAM p = { "k", OSSL_PARAM_OCTET_STRING, pg, 1, 0 };
+     *   provnum_get_size_t(&d, &p);   -- SIGSEGV at num.c:30, in paramsign()
+     *   provnum_get_int(&i, &p);      -- the same
+     *
+     * Measured on the tree this comment ships in: the five types above, on both
+     * getters, with a PROT_NONE payload and a declared size of 1, fault 10
+     * times out of 10; the same 10 with a declared size of 0 return
+     * PROVNUM_E_WRONG_TYPE, a declared size of zero being one of the two shapes
+     * num.c:22-23 does guard.
+     *
+     * The only repair that closes it is a data_type gate inside paramsign(),
+     * answering POSITIVE for every type the whitelist is going to reject so
+     * that no payload is read before provnum_copy() rejects it.  That is a
+     * FOURTH repair to num.c, and it is excluded:
+     *
+     *   AAP 0.1.2 C1   num.c "may be modified only by the three defect repairs
+     *                  specified in 0.4.2".
+     *   AAP 0.4.2 D1   prescribes this function's repair verbatim -- the
+     *                  null/zero-size guard now at num.c:22-23 -- having
+     *                  already observed that paramsign() indexes the payload
+     *                  "for any non-unsigned data type" and runs "before
+     *                  provnum_copy() performs its NULL-data and wrong-type
+     *                  checks".  The narrower guard was specified with that
+     *                  ordering in view, so this is a bounded scope decision
+     *                  and not an oversight.
+     *   AAP 0.8.1      "exactly three defect repairs ... Nothing else in this
+     *                  file changes".
+     *   AAP 0.8.2      "hardening any path beyond the three named defects" is
+     *                  "Excluded without exception".
+     *
+     * The gate expression at num.c:28 is upstream text at d5d381f, unchanged by
+     * this work.  A gate was written once in this repository, at commit
+     * fcacd47, and reverted at 3cab5d3 as an unauthorised fourth repair on
+     * exactly those grounds.  So this file asserts the whole of what num.c does
+     * owe -- the return code, the untouched destination and the byte-identical
+     * descriptor, for all five types on both instantiations -- and records what
+     * it does not owe here, rather than shipping a fixture that would fail
+     * against frozen code.  If the exclusion is ever lifted, the gate and a
+     * poisoned repetition of the loop above belong together, and this note
+     * comes out with them.
      */
 
     {
         /*
-         * The same rejection through the other instantiation, proving the
-         * whitelist belongs to provnum_copy() rather than to one generated
-         * function: implement_provnum() at num.c:149-178 produces both from
-         * one body, and num.c:181 instantiates this one with
+         * REAL narrated on its own, because it carries a point the table above
+         * does not: implement_provnum() at num.c:149-178 produces both getters
+         * from one body, and num.c:181 instantiates this one with
          * OSSL_PARAM_INTEGER as the DESTINATION type -- which must not be
-         * mistaken for permission to accept a REAL source.
+         * mistaken for permission to accept a REAL source.  The loop already
+         * pins all five types on this instantiation; this case is kept so the
+         * reason stays next to an assertion that would fail if it stopped
+         * holding.
          */
         OSSL_PARAM param;
         int dest = param_sentinel_int();
@@ -1245,10 +1338,10 @@ static int test_get_wrong_types(void)
 
     {
         /*
-         * A second type through that other instantiation, so the whitelist is
-         * pinned on both generated functions with two different types rather
-         * than on one type twice.  OSSL_PARAM_OCTET_STRING is the type whose
-         * descriptor a real provider is most likely to hand over by mistake.
+         * OCTET_STRING narrated likewise, as the type whose descriptor a real
+         * provider is most likely to hand over by mistake: worth a named case
+         * of its own and not only a row in the table above, so that the most
+         * probable real-world misuse names itself in the output.
          */
         OSSL_PARAM param;
         int dest = param_sentinel_int();
@@ -1312,7 +1405,10 @@ static int test_get_wrong_types(void)
  * descriptor declares.  That read is the caller's to promise, so no fixture in
  * this file withholds a payload it has declared; see the wrong-type group
  * above for why a poisoned wrong-type fixture would be asserting a contract
- * the library does not have.
+ * the library does not have, and for the two types whose declared size does
+ * NOT bound the object at data -- OSSL_PARAM_UTF8_PTR and OSSL_PARAM_OCTET_PTR
+ * -- recorded there as a named limitation, with the AAP sections that exclude
+ * its repair.
  */
 static int test_get_null_and_empty(void)
 {

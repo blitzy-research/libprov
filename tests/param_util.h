@@ -488,11 +488,14 @@ static PARAMUTIL_MAYBE_UNUSED void param_build_integer(OSSL_PARAM *param,
 
 /*
  * An unsigned-integer parameter over a caller-owned buffer.
- * OSSL_PARAM_UNSIGNED_INTEGER takes paramsign()'s type gate straight to
- * positive, as does every type except OSSL_PARAM_INTEGER, which alone reaches
- * the payload read: right for magnitude fixtures -- an all-bits-set buffer
- * means SIZE_MAX here and -1 under OSSL_PARAM_INTEGER -- wrong for anything
- * that must reach past that gate.
+ * OSSL_PARAM_UNSIGNED_INTEGER is the ONE data type paramsign() answers at its
+ * gate without reading the payload (num.c:28-29 -- the test is written the
+ * positive way round, `data_type == OSSL_PARAM_UNSIGNED_INTEGER`, so every
+ * other type, integer or not, falls through to the sign-byte read at
+ * num.c:30).  That makes this the right builder for magnitude fixtures -- an
+ * all-bits-set buffer means SIZE_MAX here and -1 under OSSL_PARAM_INTEGER --
+ * and the wrong one for any fixture whose subject is what happens AT or AFTER
+ * that read.
  */
 static PARAMUTIL_MAYBE_UNUSED void param_build_unsigned(OSSL_PARAM *param,
                                                         void *data,
@@ -505,14 +508,20 @@ static PARAMUTIL_MAYBE_UNUSED void param_build_unsigned(OSSL_PARAM *param,
  * A parameter with NO data buffer but a non-zero declared size: the fixture
  * for the null-source contract, whose documented answer is PROVNUM_E_NULL.
  *
- * USE OSSL_PARAM_INTEGER HERE.  paramsign() returns positive IMMEDIATELY for
- * every data type but that one, so a null-data fixture typed
- * OSSL_PARAM_UNSIGNED_INTEGER -- or any other non-integer type -- exercises
- * the type gate and can detect nothing beyond it; typed OSSL_PARAM_INTEGER it
- * does reach that code.
+ * USE OSSL_PARAM_INTEGER HERE.  OSSL_PARAM_UNSIGNED_INTEGER is the one type
+ * paramsign() answers at its gate without reading the payload (num.c:28-29),
+ * so a null-data fixture typed that way never reaches the dereference at
+ * num.c:30 and CANNOT detect a missing guard, however right its expected
+ * return code looks -- that is the M10 lesson the AAP records, and it is why
+ * this parameter exists rather than being hardcoded to the unsigned type.
+ * OSSL_PARAM_INTEGER both reaches that read and is owed PROVNUM_E_NULL, so it
+ * is the one type that makes the guard's absence observable AS the null-source
+ * contract.
  * data_type stays a parameter because pairing a null buffer with a
- * non-integer type pins which guard runs first: for OSSL_PARAM_OCTET_STRING
- * the answer is PROVNUM_E_WRONG_TYPE.
+ * non-integer type pins which guard runs first: a non-integer type reaches the
+ * read too, but its documented answer is PROVNUM_E_WRONG_TYPE, so for
+ * OSSL_PARAM_OCTET_STRING that is what must come back -- the third of the
+ * three failing cases the AAP names for this repair.
  */
 static PARAMUTIL_MAYBE_UNUSED void
 param_build_null_data(OSSL_PARAM *param, unsigned int data_type,
@@ -577,6 +586,24 @@ static PARAMUTIL_MAYBE_UNUSED int param_build_empty(OSSL_PARAM *param,
  * poisoned wrong-type fixture would fail against correct code, which is the
  * one thing an oracle here must never do.  Wrong-type rejection is asserted as
  * a return code, over readable payloads, in test_num_get.c.
+ *
+ * ONE QUALIFICATION, AND IT DOES NOT CHANGE THE RULE.  "Inside the bounds the
+ * caller promised" holds without argument for OSSL_PARAM_REAL,
+ * OSSL_PARAM_UTF8_STRING and OSSL_PARAM_OCTET_STRING, where data_size is the
+ * size of the object AT data.  It does not hold for OSSL_PARAM_UTF8_PTR or
+ * OSSL_PARAM_OCTET_PTR: <openssl/core.h> says that for those two "only
+ * pointers are manipulated for this type", and <openssl/params.h> takes the
+ * REFERENCED buffer's size for them -- OSSL_PARAM_construct_utf8_ptr(key,
+ * char **buf, size_t bsize) and OSSL_PARAM_get_octet_ptr(p, val, size_t
+ * *used_len) -- so data_size describes what the pointer refers to and need not
+ * bound the pointer object at data.  For those two types the pre-rejection
+ * read can therefore fall outside the object even for a well-formed
+ * descriptor.  Closing that would take a data_type gate in paramsign(), a
+ * FOURTH repair to num.c, which AAP 0.8.1 and 0.8.2 exclude; the reasoning,
+ * the reproduction and the citations are recorded once, at
+ * test_get_wrong_types() in test_num_get.c.  The rule above is unaffected: a
+ * poisoned wrong-type fixture would still fail against the code the AAP
+ * freezes, so it still must not exist.
  *
  * Why address 1 cannot be read: on Linux, and on any host that reserves its
  * lowest addresses against mapping, 1 lies below the floor at which an object
