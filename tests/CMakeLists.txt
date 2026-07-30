@@ -71,11 +71,11 @@
 #                         [COPTS <opt>...]  [LINKOPTS <opt>...])
 # ---------------------------------------------------------------------------
 # Builds one test executable and registers it with CTest, following the
-# maintainer's own per-directory pattern plus the three optional per-target knobs
-# the eight registrations need; keeping it in a function stops eight copies of
-# that pattern from drifting apart.  All four keywords are multi-value -- SOURCES
-# takes two entries for the targets that compile err.c in, DEFS two for the
-# NDEBUG variant -- and ${ARGN} excludes <name>.
+# maintainer's own per-directory pattern plus the three optional per-target
+# knobs the eight registrations need; keeping it in a function stops eight
+# copies of that pattern from drifting apart.  All four keywords are
+# multi-value -- SOURCES takes two entries for the targets that compile err.c
+# in, DEFS two for the NDEBUG variant -- and ${ARGN} excludes <name>.
 function(libprov_add_test name)
   cmake_parse_arguments(A "" "" "SOURCES;DEFS;COPTS;LINKOPTS" ${ARGN})
 
@@ -169,10 +169,10 @@ libprov_add_test(test_err_raise   SOURCES test_err_raise.c)
 # NDEBUG, a Release build would have flipped the default target's body too,
 # asserting graceful NULL returns against an err.c whose undefine kept the
 # aborts live.  NDEBUG reconfigures err.c; the marker tells the body which
-# contract to assert.  test_err_guards.c requires the two to be defined together
-# or not at all and #errors otherwise, which is what stops a target that lost its
-# undefine from passing in a default build while silently asserting nothing in a
-# Release one.
+# contract to assert.  test_err_guards.c requires the two to be defined
+# together or not at all and #errors otherwise, which is what stops a target
+# that lost its undefine from passing in a default build while silently
+# asserting nothing in a Release one.
 libprov_add_test(test_err_guards
                  SOURCES test_err_guards.c ${PROJECT_SOURCE_DIR}/err.c
                  COPTS -UNDEBUG)
@@ -237,9 +237,10 @@ endif()
 #
 # --wrap is a GNU ld extension, so the gate names the toolchains that carry it:
 # GCC and Clang both drive a GNU-compatible linker on a non-Apple UNIX host,
-# while Apple's ld64 has no --wrap, which is why the platform is excluded rather
-# than probed.  The gate is necessary and not sufficient -- a driver repointed at
-# a linker without --wrap fails the link, which is the intended failure mode.
+# while Apple's ld64 has no --wrap, which is why the platform is excluded
+# rather than probed.  The gate is necessary and not sufficient -- a driver
+# repointed at a linker without --wrap fails the link, which is the intended
+# failure mode.
 if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang" AND UNIX AND NOT APPLE)
   libprov_add_test(test_err_alloc SOURCES test_err_alloc.c
                    LINKOPTS "-Wl,--wrap=malloc")

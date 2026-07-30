@@ -121,10 +121,29 @@
  * called.
  *
  * DEBUGGING.  This harness forks, so a debugger stops in the PARENT by default
- * and the abort is never seen.  Tell it to follow the child:
+ * and the abort is never seen.  Tell it to follow the child, and tell it to let
+ * SIGABRT through:
  *
  *     gdb --args ./build/tests/test_err_death
  *     (gdb) set follow-fork-mode child
+ *     (gdb) handle SIGABRT nostop noprint pass
+ *
+ * Both settings are needed, and the second one is easy to miss.  A debugger
+ * INTERCEPTS SIGABRT by default: it stops the child instead of letting the
+ * signal kill it, and when the session ends the still-stopped child is reaped
+ * with SIGKILL.  The parent's waitpid() then reports WTERMSIG == SIGKILL (9)
+ * rather than SIGABRT (6), so the FIRST case -- D-1, the only fork the debugger
+ * follows before it detaches from the parent -- prints
+ *
+ *     observed : terminated by signal 9, which is not SIGABRT (6)
+ *
+ * and the run ends "7 assertions, 1 mismatches".  That verdict is the harness
+ * correctly reporting what the debugger did to the child; it is NOT a
+ * regression in err.c, and it disappears the moment SIGABRT is passed through.
+ * Measured on gdb 16.3: `set follow-fork-mode child` alone yields the spurious
+ * D-1 mismatch, while adding `handle SIGABRT nostop noprint pass` yields the
+ * same "7 assertions, 0 mismatches" the suite reports outside a debugger.  Do
+ * not "fix" a test under a debugger before reproducing the failure without one.
  *
  * WHY THE NON-ABORTING CONTROL CASE IS MANDATORY.  Six cases that all expect
  * an abort cannot tell a correct harness from one that answers "aborted"
