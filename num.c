@@ -122,9 +122,9 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
         if (src.size < dest.size) {
             /*
              * LITTLE padding starts at src.size, where the copy below ends.
-             * dest.size - src.size wrote 8 bytes past a 12-byte
-             * provnum_set_int(&p, 5) destination, and made a 9-byte all-0xFF
-             * provnum_get_int() answer -16776961 instead of -1.
+             * dest.size - src.size overran a 12-byte provnum_set_int(&p, 5)
+             * destination by four bytes, and made provnum_get_int() on a
+             * one-byte 0xFF INTEGER answer -16776961 instead of -1.
              */
             size_t padstart = dest.endian == BIG ? 0 : src.size;
 

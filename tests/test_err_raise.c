@@ -81,7 +81,7 @@
  *     top of all of the above, together with the one pointer property that is
  *     a plain contract: neither OPENSSL_FILE nor OPENSSL_FUNC can expand to a
  *     null pointer, so a forwarded null is a defect, and it is the one thing
- *     content alone cannot see (mock_core.h:150-155 records a null string as
+ *     content alone cannot see (mock_core.h:239-242 records a null string as
  *     "", which is exactly what OPENSSL_FILE expands to under
  *     OPENSSL_NO_FILENAMES).  Nothing here compares a pointer against a bare
  *     literal in any case: every expectation is captured into a variable
@@ -936,7 +936,7 @@ static int test_err_raise_macro(void)
      OPENSSL_FUNC as either a function-name macro or "(unknown function)"
      (macros.h:321-336), so both always expand to a string and never to a null
      pointer.  Content cannot see a forwarded null on its own --
-     mock_core.h:150-155 records one as "", which is precisely what
+     mock_core.h:239-242 records one as "", which is precisely what
      OPENSSL_FILE expands to under OPENSSL_NO_FILENAMES -- so the two checks
      together are what content plus a null forwarding cannot both satisfy. */
   TEST_ASSERT_PTR_NOT_NULL("ERR_raise: captured file is not null",
