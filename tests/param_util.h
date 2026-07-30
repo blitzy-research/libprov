@@ -568,26 +568,27 @@ static PARAMUTIL_MAYBE_UNUSED int param_build_empty(OSSL_PARAM *param,
  *
  * WHAT THIS FIXTURE IS NOT FOR.  It must NOT be used for a wrong-type case.
  * paramsign() reads the sign byte of every source that is not
- * OSSL_PARAM_UNSIGNED_INTEGER (num.c:25-27), and for a descriptor that
+ * OSSL_PARAM_UNSIGNED_INTEGER (num.c:28-30), and for a descriptor that
  * declares a non-zero size over a non-null buffer that read is inside the
- * bounds the CALLER promised, so it is num.c's to make.  The three sanctioned
- * repairs to num.c close the two shapes where the read would be outside an
- * object -- a null payload and a declared size of zero, both answered by the
- * guard at num.c:19-20 -- and nothing beyond them.  A poisoned wrong-type
- * fixture would therefore fail against correct code, which is the one thing an
- * oracle here must never do.  Wrong-type rejection is asserted as a return
- * code, over readable payloads, in test_num_get.c.
+ * bounds the CALLER promised, so it is num.c's to make.  The guard at
+ * num.c:22-23 covers exactly two shapes -- a null payload and a declared size
+ * of zero -- which are the shapes where the read would fall outside an object.
+ * A readable wrong-type payload is a legitimate paramsign() input, so a
+ * poisoned wrong-type fixture would fail against correct code, which is the
+ * one thing an oracle here must never do.  Wrong-type rejection is asserted as
+ * a return code, over readable payloads, in test_num_get.c.
  *
- * Why address 1 cannot be read: a hosted POSIX implementation reserves the
- * lowest addresses and never maps them (on Linux the floor is
- * vm.mmap_min_addr, 65536 by default), so 1 lies in a region no object can
- * occupy and no mapping can cover.  A read through it traps.  The wrapped
- * form traps too, which is what makes the zero-size case work: an
- * implementation that computed data_size - 1 on a declared size of zero would
- * index SIZE_MAX, and (unsigned char *)1 + SIZE_MAX is address 0 -- also
- * unmapped, also a trap.  Both mistakes land in the same unmappable region
- * rather than on some innocent neighbouring object whose bytes would have
- * been read and silently believed.
+ * Why address 1 cannot be read: on Linux, and on any host that reserves its
+ * lowest addresses against mapping, 1 lies below the floor at which an object
+ * can be placed (Linux exposes that floor as vm.mmap_min_addr, 65536 by
+ * default), so no object occupies it and no mapping covers it.  A read through
+ * it traps.  The wrapped form traps too, which is what makes the zero-size
+ * case work: an implementation that computed data_size - 1 on a declared size
+ * of zero would index SIZE_MAX, and (unsigned char *)1 + SIZE_MAX is address 0
+ * -- also unmapped, also a trap.  Both mistakes land in the same unmappable
+ * region rather than on some innocent neighbouring object whose bytes would
+ * have been read and silently believed.  POSIX itself promises none of this,
+ * which is why the limit below is stated rather than assumed away.
  *
  * Why THIS FILE contains no undefined behaviour: converting an integer to a
  * pointer is implementation-defined, not undefined (C99 6.3.2.3p5), and the
@@ -598,8 +599,8 @@ static PARAMUTIL_MAYBE_UNUSED int param_build_empty(OSSL_PARAM *param,
  * precisely the defect being detected.  param_snapshot() and
  * param_identical() stay usable, reading the DESCRIPTOR and not the payload.
  *
- * The honest limit: this is a trap, not a proof.  On a hypothetical host that
- * mapped its lowest page the read would succeed and a broken library would go
+ * The honest limit: this is a trap, not a proof.  On a host that maps its
+ * lowest page the read would succeed and a broken library would go
  * unnoticed -- the oracle would weaken.  It can never invert: correct code
  * does not read the payload, so this fixture cannot fail a correct
  * implementation, and there is no configuration in which a passing verdict

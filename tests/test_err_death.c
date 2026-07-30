@@ -93,8 +93,9 @@
  *   A TIMEOUT on the registered test makes a harness defect degrade into a
  *     reported timeout instead of a hung suite.  It is a safety net, not a
  *     budget: the whole file completes in a few milliseconds.
- *   Registration sits behind CMake's if(UNIX), which is what the AAP
- *     prescribes for this target, and where it does not hold the target is NOT
+ *   Registration sits behind CMake's if(UNIX), because fork(), waitpid() and
+ *     the wait-status macros are POSIX process control and UNIX is CMake's
+ *     name for a POSIX-like host.  Where it does not hold the target is NOT
  *     REGISTERED AT ALL.  It is never registered-and-skipped and never allowed
  *     to fail; configuration still succeeds and every other target runs
  *     normally.
@@ -215,9 +216,9 @@ target is either not reaching the compiler or was overridden. Build without \
  * __has_include is the detection used, tested for with defined() first because
  * a compiler that does not provide it must not see the operator at all; the two
  * conditions are therefore nested rather than combined on one line, since the
- * whole of a single #if line is macro-expanded before evaluation.  GCC and
- * Clang have supported it for many releases and both accept it under
- * -std=c99 -Wpedantic, which is how this suite is compiled.
+ * whole of a single #if line is macro-expanded before evaluation.  The operator
+ * is standard in C23 and has long been offered as an extension by GCC and
+ * Clang, so it is available whatever standard level the build selects.
  *
  * Where __has_include is absent the header is NOT included on a guess.  That is
  * the deliberately conservative branch: guessing would restore precisely the
@@ -341,24 +342,23 @@ static struct death_result death_run(void (*body)(void))
     /*
      * The child.  Every aborting case in this file kills it with SIGABRT, and
      * SIGABRT is a core-dumping signal, so an inherited RLIMIT_CORE lets each
-     * EXPECTED abort write a core file.  Measured before this call existed: one
-     * direct run of test_err_death left 6 dumps of 454656 bytes each, ~2.7 MB
-     * per run, at whatever /proc/sys/kernel/core_pattern points to -- and on a
-     * host whose pattern is the default bare "core" that is inside the CTest
-     * working directory, where it also shows up in git status.  AAP 0.7.2
-     * requires a run to leave no artifact behind, so the limit is dropped to
-     * zero here, in the child only, before anything can fault.
+     * EXPECTED abort write a core image -- one per aborting case, at whatever
+     * /proc/sys/kernel/core_pattern names, and on a host whose pattern is the
+     * default bare "core" that is inside the CTest working directory, where it
+     * then also shows up in git status.  A passing run must leave nothing
+     * behind, so the limit is dropped to zero here, in the child only, before
+     * anything can fault.
      *
      * This changes only whether the kernel writes the image: the child is still
      * killed by SIGABRT, so WIFSIGNALED()/WTERMSIG() below observe exactly what
-     * they observed before, and the parent's limits are untouched because
-     * setrlimit() applies to the calling process after fork().
+     * they would observe without it, and the parent's limits are untouched
+     * because setrlimit() applies to the calling process after fork().
      *
      * The result is deliberately cast away rather than tested.  A host that
      * refuses to lower RLIMIT_CORE (which cannot happen for a soft-limit
-     * decrease under POSIX) would merely go back to writing the dumps it wrote
-     * before; that is a hygiene regression, not a wrong verdict, and failing
-     * the abort contract over it would be a false negative.
+     * decrease under POSIX) would merely write those images again; that is a
+     * hygiene regression, not a wrong verdict, and failing the abort contract
+     * over it would be a false negative.
      *
      * Compiled out entirely where RLIMIT_CORE is unavailable, for the same
      * reason it is not tested when it is: see the include block above.  The
@@ -708,8 +708,8 @@ int main(void)
  * file requires -- behind tests/CMakeLists.txt's if(UNIX) -- because a host
  * without POSIX process control does not satisfy that gate and then never
  * configures the target, let alone builds or runs it.  Non-registration is the
- * mechanism on purpose: skipping a registered test is precisely what this suite
- * is forbidden to do, and a target that does not exist cannot be mistaken for
+ * mechanism on purpose: a registered-but-skipped test hides a contract that was
+ * never checked, whereas a target that does not exist cannot be mistaken for
  * one that was weakened.
  *
  * If it is ever reached anyway it must not pretend to pass.  It asserts

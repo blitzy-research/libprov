@@ -39,17 +39,12 @@
  *     definitions; hard-coded ones would be a latent failure.  All three
  *     arrive transitively through "prov/err.h" (include/prov/err.h:4-5).
  *
- *     The one thing the spellings cannot rescue is a RELATIONAL claim about
- *     two lines: with OPENSSL_NO_FILENAMES set, OPENSSL_LINE is the constant
- *     0 at every call site, so "the second raise's line is greater than the
- *     first's" is false however it is spelled.  That configuration is not one
- *     this project builds -- the mandated command passes no -D and nothing in
- *     the tree defines the macro -- and the two relational assertions in
- *     test_err_raise_macro() are kept unconditional because they are what
- *     catches a library forwarding a constant line.  Measured, so that a
- *     future reader meets a recorded fact rather than a surprise:
- *     -DOPENSSL_NO_FILENAMES leaves exactly those two assertions failing and
- *     every other one in this file passing.
+ *     The one claim the spellings cannot rescue is a RELATIONAL one about two
+ *     lines, because under OPENSSL_NO_FILENAMES every call site reports line
+ *     0.  Nothing in this tree defines that macro and the mandated command
+ *     passes no -D, so the two relational assertions in
+ *     test_err_raise_macro() stay unconditional: they are what catches a
+ *     library forwarding a constant line.
  *
  * 2.  OPENSSL_LINE expands AT THE CALL SITE, so its expectation must be
  *     captured on the SAME PHYSICAL LINE as the raise.  One line lower and it
@@ -58,57 +53,29 @@
  *     -- so only that one capture shares a line with its raise, and every such
  *     line is marked so it is not reflowed by a later edit.
  *
- * 3.  EVERY POINTER CLAIM CARRIES ITS OWN SOUNDNESS ARGUMENT.  Three separate
- *     arguments are available, and each pointer assertion below rests on the
- *     strongest one that actually applies to it.
+ * 3.  EVERY POINTER CLAIM CARRIES ITS OWN SOUNDNESS ARGUMENT, and each
+ *     assertion below rests on the strongest of the three that applies to it.
+ *     The argument is restated at each assertion; in summary:
  *
- *     (a) THIS FILE OWNS THE STRING, so the pointer is a single known object
- *         and identity is asserted unconditionally: the file and function
- *         markers in test_set_error_debug_forwarding(), the format string in
- *         test_set_error_forwarding() and in both macro cases, and the
- *         variadic string in test_va_list_traversal().  That is where a
- *         library forwarding a copy instead of the caller's pointer is
- *         caught, and it is caught for the SAME err.c function the macros
- *         reach: err.c:90-94 has one implementation, so pinning its
- *         pass-through once pins it everywhere.  Measured against a mutant
- *         that forwards a malloc()ed copy of both strings: sixteen assertions
- *         in test_set_error_debug_forwarding() fail and the run exits
- *         non-zero.
- *
- *     (b) THE LANGUAGE GUARANTEES ONE OBJECT PER FUNCTION.
- *         <openssl/macros.h>:321-323 defines OPENSSL_FUNC as __func__ whenever
- *         __STDC_VERSION__ >= 199901L, and C99 6.4.2.2p1 makes __func__ a
- *         single static const char array declared once per function -- not a
- *         string literal, so 6.4.5p6 does not reach it.  Every occurrence
- *         inside one function designates that one object, which makes the
- *         captured expectation and the expansion inside the macro the SAME
- *         address unless err.c copies the string.  Both macro cases assert
- *         that identity behind exactly that #if, so on a host taking
- *         macros.h's __FUNCTION__ or "(unknown function)" branch the claim is
- *         not made rather than made unsoundly.  This project compiles at
- *         CMAKE_C_STANDARD 99, so the guarded form is live here.
- *
- *     (c) ONE OCCURRENCE IS ONE OBJECT, whatever the implementation does with
- *         distinct literals.  This is what covers OPENSSL_FILE, for which no
- *         cross-occurrence claim is available: OPENSSL_FILE is __FILE__
- *         (macros.h:302), two occurrences of __FILE__ are two string
- *         literals, and C99 6.4.5p6 leaves it unspecified PER OCCURRENCE
- *         whether such literals are distinct objects -- an implementation may
- *         fold one pair and keep another pair apart in the same translation
- *         unit.  No run-time probe can license the cross-occurrence claim
- *         either: observing that this file's capture and some other expansion
- *         compare equal says nothing about the different pair formed by that
- *         capture and the expansion include/prov/err.h:51 forwarded.
- *         (Measured equal on this toolchain at -O0 and -O2 under both
- *         -std=c99 and -std=gnu99; a measurement is not a guarantee, so it
- *         stays a note and never an assertion.)  What IS guaranteed is that
- *         ONE occurrence of __FILE__ is ONE literal and therefore one array
- *         with one address, so both macro cases evaluate a SINGLE raise
- *         occurrence twice in a loop and require the two forwarded file
- *         pointers -- and function pointers -- to agree.  A copying
- *         implementation fails that: err.c frees nothing between raises, so
- *         two copies land at two addresses.  It needs no #if and it holds on
- *         every conforming implementation.
+ *     (a) STRINGS THIS FILE OWNS are single known objects, so identity is
+ *         asserted unconditionally -- the file and function markers passed
+ *         directly to proverr_set_error_debug(), and every format and variadic
+ *         string.  err.c:90-94 has one implementation, so pinning its
+ *         pass-through there pins it for the macro paths too.
+ *     (b) OPENSSL_FUNC is __func__ under C99 (macros.h:321-323), and C99
+ *         6.4.2.2p1 makes __func__ one static array per function rather than a
+ *         string literal, so identity across occurrences IS guaranteed.  Both
+ *         macro cases assert it behind exactly that #if, so a host taking
+ *         macros.h's __FUNCTION__ or "(unknown function)" branch does not make
+ *         the claim at all rather than making it unsoundly.
+ *     (c) OPENSSL_FILE is __FILE__ (macros.h:302), and C99 6.4.5p6 leaves it
+ *         unspecified per occurrence whether two identical literals are one
+ *         object, so no CROSS-occurrence claim is available.  What is
+ *         guaranteed is that ONE occurrence is one object, so both macro cases
+ *         evaluate a single raise occurrence twice and require the two
+ *         forwarded pointers to agree.  A copying implementation fails that:
+ *         err.c frees nothing between raises, so two copies land at two
+ *         addresses.
  *
  *     Content and the call-site line are asserted for the generated values on
  *     top of all of the above, together with the one pointer property that is
@@ -139,15 +106,11 @@
  *
  * NO LIBCRYPTO IS CALLED OR LINKED: the core is mock_core.h's hand-built one,
  * the accessors err.c uses expand to static inline definitions, and no function
- * declared by any <openssl/...> header is ever called.  <openssl/params.h> is
- * not included directly by this file, but it does arrive transitively --
- * prov/err.h includes <openssl/core_dispatch.h>, which includes
- * <openssl/indicator.h>, which includes it.  That is the project header's own
- * include graph rather than a choice made here, and it only DECLARES libcrypto
- * functions: a linked test binary's dynamic dependencies remain the vDSO, libc
- * and the loader alone.  What matters is that none of those functions -- the
- * OSSL_PARAM_get_*, set_* and construct_* families the provnum_ family exists
- * to replace -- is ever called.
+ * declared by any <openssl/...> header is ever called.  <openssl/params.h>
+ * arrives transitively -- prov/err.h includes <openssl/core_dispatch.h>, which
+ * includes <openssl/indicator.h>, which includes it -- but it only DECLARES
+ * libcrypto functions, and none of them (the OSSL_PARAM_get_*, set_* and
+ * construct_* families the provnum_ family exists to replace) is ever called.
  *
  * <openssl/err.h> IS INCLUDED DELIBERATELY, and first: it is what seeds
  * ERR_put_error() so the negative compile-time contract below has something to
@@ -183,8 +146,9 @@
  * intermediate #error is the positive half: it fires if neither source
  * defined the macro, which would mean the seed itself had silently failed.
  *
- * Verified: with include/prov/err.h:43 removed from a scratch copy of the
- * header, this translation unit FAILS to compile on the final #error below.
+ * The seed is what makes the contract load-bearing: delete
+ * include/prov/err.h:43 and this translation unit stops compiling on the final
+ * #error below.
  */
 #include <openssl/err.h>
 
@@ -993,7 +957,7 @@ static int test_err_raise_macro(void)
      branch whose expansion is standardised, so where macros.h takes its
      __FUNCTION__ or "(unknown function)" branch the claim is not made rather
      than made unsoundly.  This target is built at CMAKE_C_STANDARD 99, so the
-     guarded assertion is live here and was observed to run. */
+     guarded assertion is live here. */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
   TEST_ASSERT_PTR_EQ("ERR_raise: captured function pointer identity",
                      mock_core_obs.func_ptr, expected_func);
@@ -1005,18 +969,13 @@ static int test_err_raise_macro(void)
      OPENSSL_FILE capture against the expansion inside the macro -- is NOT
      available, because two occurrences of __FILE__ are two string literals and
      C99 6.4.5p6 leaves their distinctness unspecified per occurrence.  It is
-     declined DESPITE holding here: the cross-occurrence comparison was
-     measured on this toolchain at -O0, -O3, --coverage,
-     -fsanitize=address,undefined and even -fno-merge-constants, and the two
-     addresses agreed every time.  Asserting it would therefore pass here while
-     encoding something the standard does not promise, so the sound claim is
-     made instead and nothing is lost: the copying implementation that a
-     cross-occurrence identity check would catch is caught below, and the two
-     DIRECT calls at "set_error_debug: file pointer identity" and
-     "...: func pointer identity" already pin pass-through over objects this
-     file owns -- both were confirmed to fail against an err.c that forwards a
-     strdup()ed copy.  What the standard DOES guarantee is that ONE occurrence
-     is ONE literal, hence one array with one address, however the
+     declined even where it would happen to hold, because asserting it would
+     encode something the standard does not promise.  Nothing is lost by
+     declining it: the copying implementation such a check would catch is
+     caught below, and the two DIRECT calls at "set_error_debug: file pointer
+     identity" and "...: func pointer identity" already pin pass-through over
+     objects this file owns.  What the standard DOES guarantee is that ONE
+     occurrence is ONE literal, hence one array with one address, however the
      implementation stores it.  So the loop below drives a SINGLE ERR_raise()
      occurrence twice and requires the two forwarded addresses to agree.  A
      copying implementation fails it: err.c frees nothing between raises, so

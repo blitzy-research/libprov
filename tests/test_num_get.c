@@ -3,10 +3,10 @@
 /*
  * Contract, boundary and error-precedence tests for provnum_get_size_t() and
  * provnum_get_int(), the two conversions implement_provnum() generates at
- * num.c:169 and num.c:170.  Every case asserts a SPECIFIC value -- an exact
+ * num.c:180 and num.c:181.  Every case asserts a SPECIFIC value -- an exact
  * return code, an exact destination value, or an exact byte-level side effect.
  *
- * SUCCESS IS EXACTLY 1, AND ONLY num.c SAYS SO.  num.c:56 initialises
+ * SUCCESS IS EXACTLY 1, AND ONLY num.c SAYS SO.  num.c:59 initialises
  * `struct resultdesc result = { dest.size, 1, };`, while include/prov/num.h
  * defines the four failure codes and never states the success value, so a
  * caller testing "> 0" and a caller testing "== 1" would both compile.  Every
@@ -15,14 +15,14 @@
  *
  * THE GUARD CHAIN, IN THE ORDER provnum_copy() EVALUATES IT:
  *
- *     wrong-type rejection        num.c:58-62
- *     empty-source shortcut       num.c:64-68    returns SUCCESS
- *     null-data rejection         num.c:70-73
- *     padding-strip loop          num.c:92-96
- *     oversize rejection          num.c:98-101
- *     null-destination rejection  num.c:105-108
- *     simple-case copy            num.c:110-131
- *     unsupported fallthrough     num.c:134
+ *     wrong-type rejection        num.c:61-65
+ *     empty-source shortcut       num.c:67-71    returns SUCCESS
+ *     null-data rejection         num.c:73-76
+ *     padding-strip loop          num.c:98-102
+ *     oversize rejection          num.c:104-107
+ *     null-destination rejection  num.c:111-114
+ *     simple-case copy            num.c:116-142
+ *     unsupported fallthrough     num.c:145
  *
  * Several of those guards are mutually satisfiable, so an input can satisfy
  * two at once and the answer is then decided by nothing but evaluation order.
@@ -34,10 +34,10 @@
  *
  * Do not "tidy" the fixtures in test_get_null_and_empty() to
  * OSSL_PARAM_UNSIGNED_INTEGER.  paramsign() is called from the argument list
- * at num.c:147, so it runs BEFORE provnum_copy() validates anything, and the
- * type gate at num.c:25-26 returns POSITIVE immediately for
+ * at num.c:158, so it runs BEFORE provnum_copy() validates anything, and the
+ * type gate at num.c:28-29 returns POSITIVE immediately for
  * OSSL_PARAM_UNSIGNED_INTEGER, so a source of that type never reaches the
- * dereference at num.c:27 at all.  A null-data fixture typed
+ * dereference at num.c:30 at all.  A null-data fixture typed
  * OSSL_PARAM_UNSIGNED_INTEGER is therefore STRUCTURALLY INCAPABLE of detecting
  * a missing null check, however correct its expected return code looks.  Both
  * spellings are kept below, the signed one first and labelled, because only
@@ -71,46 +71,42 @@
  * Two plausible single-token defects in num.c change no return code and no
  * destination value for any input whose payload the library is free to read:
  * their whole effect is an access one byte outside an object, which an ordinary
- * build answers with whatever byte happens to be adjacent.  MEASURED against
- * readable fixtures alone: with either half of paramsign()'s guard at
- * num.c:19-20 removed, every case in this file still passed.  The answer is not
- * to instrument the mandated command but to stop handing over a payload the
+ * build answers with whatever byte happens to be adjacent.  Against readable
+ * fixtures alone, therefore, a missing half of paramsign()'s guard at
+ * num.c:22-23 is indistinguishable from correct code.  The answer is not to
+ * instrument the mandated command but to stop handing over a payload the
  * library is entitled to read: param_util.h's param_build_poisoned() supplies
  * a descriptor whose data pointer lies where no mapping can cover it, so an
- * access that must not happen becomes a signal instead of a neighbour's byte.
- * MEASURED with that fixture in place, in the DEFAULT build with no
- * instrumentation: reverting either half of the guard at num.c:19-20
- * terminates this test on a signal, and reverting the padding offset at
- * num.c:118 produces eight value mismatches.
+ * access that must not happen becomes a signal -- which CTest reports as a
+ * failure -- instead of a neighbour's byte.
  *
  * WHAT THE POISONED FIXTURE DOES NOT CLAIM.  It pins the empty-source
  * shortcut, and only that.  It is NOT used to demand that a wrong data type be
  * rejected before the payload is consulted, because num.c does not owe that:
  * paramsign() reads the sign byte of any source that is not
- * OSSL_PARAM_UNSIGNED_INTEGER (num.c:25-27), within the size the descriptor
- * declares, and that read is inside the caller's own stated bounds.  The three
- * sanctioned repairs to num.c cover the shapes where the read is genuinely
- * outside an object -- a null payload and a declared size of zero -- and
- * nothing further.  Wrong-type rejection is therefore asserted below with
+ * OSSL_PARAM_UNSIGNED_INTEGER (num.c:28-30), within the size the descriptor
+ * declares, and that read is inside the caller's own stated bounds.  The guard
+ * at num.c:22-23 covers exactly the shapes where the read would fall outside an
+ * object -- a null payload and a declared size of zero -- and nothing
+ * further.  Wrong-type rejection is therefore asserted below with
  * ordinary readable payloads, for all five non-integer types, as a return code
  * and not as a memory property.  Do not reintroduce a poisoned wrong-type
  * fixture: it would assert a contract the library does not have and would fail
  * on correct code.
  *
  * The opt-in -fsanitize=address,undefined configuration documented in
- * README.md stays worth running, and is run alongside the mutation
- * spot-checks, for what it ADDS rather than for what it replaces: it names the
- * file and line of an offending access instead of only reporting a signal, it
- * sees the same read through the ordinary readable fixtures too, and it would
- * still catch a host that mapped the region these fixtures rely on being
- * unmapped.
+ * README.md stays worth running for what it ADDS rather than for what it
+ * replaces: it names the file and line of an offending access instead of only
+ * reporting a signal, it sees the same read through the ordinary readable
+ * fixtures too, and it would still catch a host that mapped the region these
+ * fixtures rely on being unmapped.
  *
  * Exactly one behaviour is deliberately NOT asserted, marked "CLASS C" in
  * test_get_edge_cases().  It is not a gap and must not be "completed" by
  * asserting the value the code currently emits.
  *
  * The getters dereference their `param` argument unconditionally at
- * num.c:146-147, so a null OSSL_PARAM * is undefined behaviour rather than a
+ * num.c:157-158, so a null OSSL_PARAM * is undefined behaviour rather than a
  * documented error, and there is no fixture for it: undefined behaviour is not
  * a result a test may legitimately assert.
  *
@@ -146,11 +142,9 @@
  * quietly weaken that.
  *
  * That mechanism depends on a build flag the mandated command does not pass, so
- * it is an opt-in verification step rather than a default one; README.md
- * documents the configuration, and the mutation spot-checks are run under it
- * for exactly this class of defect.  Exact sizing is what makes the step
- * effective, which is why it is a property of these fixtures and not of the
- * build.
+ * it is an opt-in verification step rather than a default one, and README.md
+ * documents the configuration.  Exact sizing is what makes the step effective,
+ * which is why it is a property of these fixtures and not of the build.
  *
  * A per-case block also keeps each case independent, so the order they run in
  * is irrelevant.
@@ -162,7 +156,7 @@
  * carries param_identical()'s verdict against a snapshot taken before the
  * call, and `return_size` is captured because the getters must NOT write it:
  * only the provnum_set_ half of implement_provnum() assigns return_size, at
- * num.c:165.
+ * num.c:176.
  */
 struct size_t_result {
     int rc;
@@ -186,7 +180,7 @@ struct int_result {
  * destination in the same expression that filled it.
  *
  * A null `dest` is a legitimate fixture -- provnum_get_size_t(NULL, &param)
- * exercises the null-destination guard at num.c:105-108 and the empty-source
+ * exercises the null-destination guard at num.c:111-114 and the empty-source
  * shortcut that precedes it -- so `value` is reported as 0 in that case and
  * such cases assert the return code instead.  There is nothing else to read:
  * a destination that does not exist cannot be shown to be unmodified.
@@ -260,7 +254,7 @@ static int test_get_size_t_happy(void)
         /*
          * One byte holding 5, the narrowest source there is, and a D3
          * REGRESSION GUARD: src.size < dest.size, so the padding branch at
-         * num.c:116-122 runs.  A padding offset of dest.size - src.size rather
+         * num.c:122-133 runs.  A padding offset of dest.size - src.size rather
          * than src.size would put the significant byte at dest[0] and start
          * the padding at dest[SZ - 1], leaving the seeded sentinel in between,
          * so a wrong offset is a wrong VALUE here and not merely an
@@ -314,7 +308,7 @@ static int test_get_size_t_happy(void)
          * A source exactly as wide as the destination, every bit set: the
          * largest value a size_t can hold, and the case where src.size ==
          * dest.size so no padding is written at all and the strip loop at
-         * num.c:92-96 runs zero times.
+         * num.c:98-102 runs zero times.
          */
         unsigned char src[sizeof(size_t)];
         OSSL_PARAM param;
@@ -339,8 +333,8 @@ static int test_get_size_t_happy(void)
          * One byte WIDER than the destination, and legitimately so: the most
          * significant byte is 0x00, which equals the positive padding value,
          * and the next byte's high bit is clear, so both of the padding rules
-         * num.c:85-88 documents are satisfied and the strip loop at
-         * num.c:92-96 discards exactly one byte.  What is left is a size_t
+         * num.c:88-91 documents are satisfied and the strip loop at
+         * num.c:98-102 discards exactly one byte.  What is left is a size_t
          * with its top bit clear, so the conversion succeeds.
          */
         unsigned char src[sizeof(size_t) + 1];
@@ -367,7 +361,7 @@ static int test_get_size_t_happy(void)
     {
         /*
          * A getter must not write the parameter's return_size.  Only the
-         * provnum_set_ half of implement_provnum() assigns it, at num.c:165;
+         * provnum_set_ half of implement_provnum() assigns it, at num.c:176;
          * param_build() leaves it 0, so a getter that acquired that
          * assignment -- the obvious result of unifying the two halves -- would
          * be caught here rather than by a downstream caller's buffer sizing.
@@ -414,7 +408,7 @@ static int test_get_int_happy(void)
      * are above.  The second assertion also states this file's one
      * representational premise: that the bit pattern one past the largest
      * positive value denotes INT_MIN, which is two's complement.  num.c
-     * presupposes it too -- num.c:85-86 says the padding byte its rules
+     * presupposes it too -- num.c:88-89 says the padding byte its rules
      * compare, num.c:7's sign_t, "just so happens to have the 2's complement
      * padding value" -- so a host where this failed would be a host where the
      * library's own padding rules do not hold, and the failure names the
@@ -431,8 +425,8 @@ static int test_get_int_happy(void)
     {
         /*
          * One byte, every bit set, read as a signed source: paramsign()
-         * reaches its dereference at num.c:27, finds the high bit set and
-         * answers NEGATIVE, so the padding at num.c:120 fills the remaining
+         * reaches its dereference at num.c:30, finds the high bit set and
+         * answers NEGATIVE, so the padding at num.c:131 fills the remaining
          * bytes with 0xFF and -1 comes out sign extended.
          *
          * THE PRIMARY D3 REGRESSION GUARD.  A padding offset of dest.size -
@@ -514,13 +508,13 @@ static int test_get_int_happy(void)
         /*
          * Five bytes past the destination's width, every bit set: -1 written
          * with the maximum possible redundancy.  Both padding rules hold at
-         * every step, so the strip loop at num.c:92-96 runs until src.size
+         * every step, so the strip loop at num.c:98-102 runs until src.size
          * reaches dest.size exactly -- five iterations here -- and the copy
          * then needs no padding at all.
          *
          * This case is a FULL-STRIP assertion and deliberately not labelled a
          * D3 guard: because it strips to exactly sizeof(int), src.size ==
-         * dest.size and the padding branch at num.c:116-122 never runs, so the
+         * dest.size and the padding branch at num.c:122-133 never runs, so the
          * padding offset cannot affect it.  The narrow-source cases above are
          * what catch a wrong offset.
          */
@@ -586,8 +580,8 @@ static int test_get_int_happy(void)
         /*
          * An UNSIGNED source into the signed destination, which is the other
          * half of the type matrix and takes a different route through
-         * num.c:111-114: paramsign() short-circuits to POSITIVE at
-         * num.c:25-26, so the padding is written with 0x00 rather than 0xFF
+         * num.c:117-120: paramsign() short-circuits to POSITIVE at
+         * num.c:28-29, so the padding is written with 0x00 rather than 0xFF
          * and the simple-case condition is satisfied by its second disjunct
          * instead of its first.
          */
@@ -632,7 +626,7 @@ static int test_get_boundaries(void)
         /*
          * PAIR 1a -- the largest value a size_t destination can hold, at its
          * own width.  The strip loop cannot run (src.size == dest.size) and
-         * the oversize test at num.c:98 must not fire on equality, which is
+         * the oversize test at num.c:104 must not fire on equality, which is
          * the mutation this half of the pair catches: a `>=` there rejects
          * every exact-width source.
          */
@@ -658,9 +652,9 @@ static int test_get_boundaries(void)
         /*
          * PAIR 1b -- the smallest value that does NOT fit, which is SIZE_MAX
          * + 1: a one in the byte just past the destination's width and zeros
-         * below it.  The first padding rule at num.c:93 fails at once, since
+         * below it.  The first padding rule at num.c:99 fails at once, since
          * 0x01 is not the positive pad byte, so the loop breaks at full width
-         * and num.c:98-101 answers PROVNUM_E_TOOBIG.
+         * and num.c:104-107 answers PROVNUM_E_TOOBIG.
          */
         unsigned char src[sizeof(size_t) + 1];
         OSSL_PARAM param;
@@ -720,7 +714,7 @@ static int test_get_boundaries(void)
         /*
          * PAIR 2b -- INT_MAX + 1, at the same width and differing from PAIR
          * 2a in ONE BIT: the high bit of the byte below the padding.  That
-         * bit is exactly what the second padding rule at num.c:94-95
+         * bit is exactly what the second padding rule at num.c:100-101
          * inspects, so the strip is refused, the source stays a byte too wide
          * and the answer is PROVNUM_E_TOOBIG.  This half of the pair is what
          * a suite must have to notice a dropped rule (b): without it, the
@@ -825,7 +819,7 @@ static int test_get_boundaries(void)
         /*
          * PAIR 4a -- the one-byte sign boundary, positive half: 0x7F is the
          * largest one-byte value whose high bit is clear, so paramsign()
-         * answers POSITIVE at num.c:27-29 and the destination is zero padded.
+         * answers POSITIVE at num.c:30-32 and the destination is zero padded.
          */
         unsigned char src[1];
         OSSL_PARAM param;
@@ -851,7 +845,7 @@ static int test_get_boundaries(void)
          * PAIR 4b -- the same width, one greater: 0x80 sets the high bit, so
          * the very same bytes now denote a negative number and the padding
          * flips from 0x00 to 0xFF.  Nothing but paramsign()'s dereference at
-         * num.c:27 distinguishes the two halves of this pair, which makes it
+         * num.c:30 distinguishes the two halves of this pair, which makes it
          * the tightest test of sign detection in this file.
          */
         unsigned char src[1];
@@ -878,7 +872,7 @@ static int test_get_boundaries(void)
         /*
          * PAIR 5a -- the same one-byte sign boundary seen from the UNSIGNED
          * destination, positive half: a signed source whose sign bit is clear
-         * is POSITIVE, so the second disjunct of num.c:114 holds and the
+         * is POSITIVE, so the second disjunct of num.c:120 holds and the
          * conversion into a size_t succeeds.
          */
         unsigned char src[1];
@@ -905,8 +899,8 @@ static int test_get_boundaries(void)
     {
         /*
          * PAIR 5b -- one greater, and the whole answer changes: with the sign
-         * bit set the source is NEGATIVE, neither disjunct of num.c:114
-         * holds, and control reaches the fallthrough at num.c:134.  This is
+         * bit set the source is NEGATIVE, neither disjunct of num.c:120
+         * holds, and control reaches the fallthrough at num.c:145.  This is
          * the boundary at which a signed source stops being convertible to an
          * unsigned destination, and the pair pins it to the bit rather than to
          * the type: the same width, the same destination, one bit apart, two
@@ -967,7 +961,7 @@ static int test_get_boundaries(void)
 /*
  * The padding-strip rules, and the one behaviour this file will not assert.
  *
- * num.c:85-88 documents both rules the strip loop applies to a source wider
+ * num.c:88-91 documents both rules the strip loop applies to a source wider
  * than its destination:
  *
  *   (a) the most significant byte must equal the sign pad byte, which for
@@ -976,15 +970,11 @@ static int test_get_boundaries(void)
  *   (b) the high bit of the NEXT byte down must match the high bit of that
  *       same pad byte.
  *
- * A NAMING NOTE, because that citation does not read cleanly on its own.
- * num.c:85-88 states both rules in terms of a "srcsigned", and no identifier
- * of that name exists anywhere in the file.  What the loop actually compares
- * is src.sign, the struct numdesc member declared at num.c:39: rule (a) is
- * the test at num.c:93 and rule (b) the test at num.c:94-95.  The stale name
- * is recorded here rather than corrected there because num.c's diff is
- * deliberately confined to the three sanctioned memory-safety repairs -- the
- * same reason include/prov/num.h's silence on the success value is recorded
- * in this file's header instead of being fixed in the header itself.
+ * READING THAT CITATION: the prose states both rules in terms of a
+ * "srcsigned", and no identifier of that name exists anywhere in the file.
+ * What the loop actually compares is src.sign, the struct numdesc member
+ * declared at num.c:42 -- rule (a) is the test at num.c:99 and rule (b) the
+ * test at num.c:100-101.
  *
  * Neither rule is written to care whether the source's declared type is
  * signed, and the pair of fixtures below proves that it does not: two
@@ -1041,7 +1031,7 @@ static int test_get_edge_cases(void)
          * SZ + 1 bytes reading 00 FF FF .. FF denotes SIZE_MAX, which would
          * fit the destination perfectly, and is still refused, because rule
          * (b) sees a set high bit under a positive pad byte.  That is what
-         * num.c:85-88 specifies; no separate assertion is made for it, since
+         * num.c:88-91 specifies; no separate assertion is made for it, since
          * the fixture below already pins the rule that decides it.
          */
         unsigned char src[sizeof(size_t) + 1];
@@ -1105,8 +1095,8 @@ static int test_get_edge_cases(void)
      *
      * The behaviour: provnum_get_int() given an OSSL_PARAM_UNSIGNED_INTEGER
      * source exactly sizeof(int) bytes wide with every bit set.  paramsign()
-     * short-circuits to POSITIVE at num.c:25-26, the simple-case condition at
-     * num.c:111-114 is satisfied, src.size == dest.size so the bytes are
+     * short-circuits to POSITIVE at num.c:28-29, the simple-case condition at
+     * num.c:117-120 is satisfied, src.size == dest.size so the bytes are
      * copied verbatim, and the signed destination ends up holding a NEGATIVE
      * number even though the source was declared unsigned.
      *
@@ -1137,7 +1127,7 @@ static int test_get_edge_cases(void)
 /*
  * The type whitelist -- every data type that is not an integer is refused.
  *
- * num.c:58-62 admits OSSL_PARAM_INTEGER and OSSL_PARAM_UNSIGNED_INTEGER and
+ * num.c:61-65 admits OSSL_PARAM_INTEGER and OSSL_PARAM_UNSIGNED_INTEGER and
  * rejects everything else.  <openssl/core.h> defines exactly five other data
  * types, and all five are exercised below, individually, so a failure names
  * the type that slipped through.  Testing one type would leave the check
@@ -1165,9 +1155,9 @@ static int test_get_wrong_types(void)
     };
     /*
      * One buffer serves every iteration, and it is READABLE on purpose.
-     * paramsign() runs at num.c:147, before provnum_copy() validates anything,
+     * paramsign() runs at num.c:158, before provnum_copy() validates anything,
      * and it reads the sign byte of every source that is not
-     * OSSL_PARAM_UNSIGNED_INTEGER (num.c:25-27).  That read is inside the size
+     * OSSL_PARAM_UNSIGNED_INTEGER (num.c:28-30).  That read is inside the size
      * this descriptor declares, so it is the library's to make; a fixture that
      * withheld the payload would fault on correct code rather than test it.
      * Building the buffer once means its verdict is asserted once rather than
@@ -1204,19 +1194,19 @@ static int test_get_wrong_types(void)
      *
      * The loop above proves each of the five types is refused.  It does not
      * claim the refusal came BEFORE the payload was consulted, because num.c
-     * does not owe that.  paramsign() runs at num.c:147, inside the initialiser
+     * does not owe that.  paramsign() runs at num.c:158, inside the initialiser
      * of the descriptor handed to provnum_copy(), so it executes before the
-     * type check at num.c:58-62 -- and it reads the sign byte of every source
-     * that is not OSSL_PARAM_UNSIGNED_INTEGER (num.c:25-27).  For a descriptor
+     * type check at num.c:61-65 -- and it reads the sign byte of every source
+     * that is not OSSL_PARAM_UNSIGNED_INTEGER (num.c:28-30).  For a descriptor
      * that declares a non-zero size over a non-null buffer that read is inside
      * the caller's own stated bounds, so it is defined and legitimate: a
      * provider that names an OSSL_PARAM_OCTET_STRING of four bytes is stating
      * that four bytes are there to be read.
      *
-     * The three sanctioned repairs to num.c cover exactly the shapes where the
-     * read would be outside an object -- a null payload and a declared size of
-     * zero, both answered by the guard at num.c:19-20 -- and pinning anything
-     * beyond them would be hardening the library rather than testing it.  A
+     * The guard at num.c:22-23 covers exactly the shapes where the read would
+     * be outside an object -- a null payload and a declared size of zero -- and
+     * pinning anything beyond them would be hardening the library rather than
+     * testing it.  A
      * poisoned wrong-type fixture would do precisely that: it withholds a
      * payload the descriptor promises, so it would fail against correct code.
      * The empty-source shortcut is the one ordering this suite CAN pin that
@@ -1228,8 +1218,8 @@ static int test_get_wrong_types(void)
         /*
          * The same rejection through the other instantiation, proving the
          * whitelist belongs to provnum_copy() rather than to one generated
-         * function: implement_provnum() at num.c:138-167 produces both from
-         * one body, and num.c:170 instantiates this one with
+         * function: implement_provnum() at num.c:149-178 produces both from
+         * one body, and num.c:181 instantiates this one with
          * OSSL_PARAM_INTEGER as the DESTINATION type -- which must not be
          * mistaken for permission to accept a REAL source.
          */
@@ -1283,10 +1273,10 @@ static int test_get_wrong_types(void)
  * *** THE FIXTURES BELOW MUST STAY OSSL_PARAM_INTEGER.  READ THIS FIRST. ***
  *
  * provnum_get_size_t() and provnum_get_int() both compute paramsign(param) in
- * the argument list at num.c:147, so paramsign() runs BEFORE provnum_copy()
- * has validated anything at all.  Inside it, the type gate at num.c:25-26
+ * the argument list at num.c:158, so paramsign() runs BEFORE provnum_copy()
+ * has validated anything at all.  Inside it, the type gate at num.c:28-29
  * returns POSITIVE the moment the data type is OSSL_PARAM_UNSIGNED_INTEGER,
- * so a source of that type never reaches the dereference at num.c:27 --
+ * so a source of that type never reaches the dereference at num.c:30 --
  * indexed with data_size - 1, which for a size of zero wraps and reads before
  * the buffer.
  *
@@ -1302,16 +1292,16 @@ static int test_get_wrong_types(void)
  *
  * One thing these cases deliberately do NOT pin: the guard answers POSITIVE,
  * and nothing observable depends on that choice.  src.sign is read at exactly
- * four places -- the two strip rules at num.c:93 and num.c:94-95, the sign
- * clause at num.c:114 and the pad fill at num.c:120 -- and every input that
+ * four places -- the two strip rules at num.c:99 and num.c:100-101, the sign
+ * clause at num.c:120 and the pad fill at num.c:131 -- and every input that
  * reaches the guard leaves provnum_copy() before any of them, a zero data_size
- * by the empty-source shortcut at num.c:64-68 and a null data pointer with a
- * non-zero size by the rejection at num.c:70-73.  The returned value is dead
+ * by the empty-source shortcut at num.c:67-71 and a null data pointer with a
+ * non-zero size by the rejection at num.c:73-76.  The returned value is dead
  * on every path that can produce it, so no assertion could distinguish
  * POSITIVE from NEGATIVE and none is written; this is an equivalence, not a
  * gap.
  *
- * The type gate at num.c:25-26 is a separate matter and is NOT a repair: it is
+ * The type gate at num.c:28-29 is a separate matter and is NOT a repair: it is
  * num.c's own, unchanged, and it exists so that an unsigned source -- which
  * has no sign byte to consult -- is answered without a read.  Every other data
  * type, integer or not, has its sign byte read there, within the size the
@@ -1328,7 +1318,7 @@ static int test_get_null_and_empty(void)
         /*
          * A null source with a signed type, into the signed destination: the
          * fixture that reaches paramsign()'s dereference.  The documented
-         * answer is PROVNUM_E_NULL, from num.c:70-73.
+         * answer is PROVNUM_E_NULL, from num.c:73-76.
          */
         OSSL_PARAM param;
         int dest = param_sentinel_int();
@@ -1396,25 +1386,24 @@ static int test_get_null_and_empty(void)
         /*
          * An empty source: a real buffer, a declared size of zero, and a
          * signed type.  Two things are surprising and both are asserted.  The
-         * shortcut at num.c:64-68 returns SUCCESS rather than an error, and it
-         * zeroes the WHOLE destination on the way out at num.c:66 -- so an
+         * shortcut at num.c:67-71 returns SUCCESS rather than an error, and it
+         * zeroes the WHOLE destination on the way out at num.c:69 -- so an
          * empty number converts to 0 and the sentinel is gone.  A refactor
          * that turned an empty source into an error, or that stopped clearing
          * the destination, would break here.
          *
          * This is also the zero-size half of the pre-validation dereference:
-         * with the guard at num.c:19-20 removed, paramsign() computes
+         * with the guard at num.c:22-23 removed, paramsign() computes
          * data_size - 1, wraps, and reads the byte BEFORE this buffer.  THIS
          * fixture cannot see that read.  The byte before an automatic object is
-         * ordinary readable memory, so the mutant returns exactly the success
-         * asserted here and nothing distinguishes it.  MEASURED: reintroducing
-         * the defect left this case, and every other case in the file, passing.
-         * The poisoned repetition immediately below is what closes it, by
-         * making that same read land in memory no mapping covers instead of on
-         * a neighbour's byte; the opt-in -fsanitize=address configuration
-         * remains a second, independent witness that additionally names the
-         * offending line.  The buffer stays a separate automatic object sized
-         * exactly to the fixture so that witness keeps working.
+         * ordinary readable memory, so a num.c without the guard returns
+         * exactly the success asserted here and nothing about this fixture
+         * distinguishes it.  The poisoned repetition immediately below closes
+         * that, by making the same read land in memory no mapping covers
+         * instead of on a neighbour's byte; the opt-in -fsanitize=address
+         * configuration remains a second, independent witness that additionally
+         * names the offending line.  The buffer stays a separate automatic
+         * object sized exactly to the fixture so that witness keeps working.
          */
         unsigned char src[sizeof(int)];
         OSSL_PARAM param;
@@ -1459,10 +1448,10 @@ static int test_get_null_and_empty(void)
          * touched.
          *
          * The type MUST be OSSL_PARAM_INTEGER.  Typed
-         * OSSL_PARAM_UNSIGNED_INTEGER, paramsign() answers at num.c:25 without
+         * OSSL_PARAM_UNSIGNED_INTEGER, paramsign() answers at num.c:28 without
          * looking, so the fixture would pass whether or not the zero-size guard
-         * at num.c:19-20 exists.  Typed anything that is NOT an integer type,
-         * the read at num.c:27 is one num.c is entitled to make, so the fixture
+         * at num.c:22-23 exists.  Typed anything that is NOT an integer type,
+         * the read at num.c:30 is one num.c is entitled to make, so the fixture
          * would fault on correct code -- which is why no wrong-type case uses
          * it.  OSSL_PARAM_INTEGER is the one type for which the guard is the
          * ONLY thing standing between the call and the payload, so its removal
@@ -1473,7 +1462,7 @@ static int test_get_null_and_empty(void)
          * default-build oracle the readable-buffer case above cannot be.
          *
          * Both instantiations are exercised because the guard lives in the
-         * shared paramsign() at num.c:16-30 and a fix applied to only one
+         * shared paramsign() at num.c:16-33 and a fix applied to only one
          * generated function is a fix that was never applied at all.
          */
         OSSL_PARAM param;
@@ -1509,7 +1498,7 @@ static int test_get_null_and_empty(void)
         /*
          * A null DESTINATION with a source that is present and fits.  Nothing
          * can be stripped (the source is already one byte), nothing is too
-         * big, so control reaches num.c:105-108 and PROVNUM_E_NULL comes back.
+         * big, so control reaches num.c:111-114 and PROVNUM_E_NULL comes back.
          * There is no destination to inspect afterwards, so the return code is
          * the whole of the observable contract here -- which is why the empty
          * source case in test_get_precedence() matters: it is the one input
@@ -1554,17 +1543,17 @@ static int test_get_null_and_empty(void)
      * not visible from the return codes alone.
      *
      * A null destination clamps the padding-strip loop's floor to one byte
-     * (num.c:91).  When every source byte equals the sign pad byte both strip
+     * (num.c:97).  When every source byte equals the sign pad byte both strip
      * rules hold at every position, so the loop walks the source all the way
      * down and stops at a single byte -- src.size > end is false once src.size
-     * reaches 1 (num.c:92).  The oversize test at num.c:98 then sees the
+     * reaches 1 (num.c:98).  The oversize test at num.c:104 then sees the
      * stripped width, so even a source wider than the destination is not too
-     * big, and the answer is PROVNUM_E_NULL from num.c:105-108.  The sign pad
+     * big, and the answer is PROVNUM_E_NULL from num.c:111-114.  The sign pad
      * byte is the type's two's-complement fill (num.c:7), so "all pad bytes"
      * means all 0x00 for a positive source and all 0xff for a negative one.
      *
      * These are the only inputs that pin the strip loop's FLOOR.  Relaxing the
-     * bound at num.c:92 from > to >= lets the loop run one iteration too many
+     * bound at num.c:98 from > to >= lets the loop run one iteration too many
      * at src.size == 1, where rule (a) holds -- the byte equals the sign pad
      * -- so the || does not short-circuit and rule (b) indexes srcmsb +
      * srcmsb2lsb, one byte BEFORE the start of the source.  That relaxation
@@ -1579,7 +1568,7 @@ static int test_get_null_and_empty(void)
      */
     {
         /*
-         * One byte, 0x00, signed.  paramsign() reads the byte at num.c:27,
+         * One byte, 0x00, signed.  paramsign() reads the byte at num.c:30,
          * finds the high bit clear and answers POSITIVE, so the single byte
          * IS the pad byte and the loop is asked to strip it.
          */
@@ -1601,7 +1590,7 @@ static int test_get_null_and_empty(void)
 
     {
         /*
-         * One byte, 0xff, signed: paramsign() answers NEGATIVE (num.c:27),
+         * One byte, 0xff, signed: paramsign() answers NEGATIVE (num.c:30),
          * whose pad byte is 0xff, so again the only byte present is a pad
          * byte.  This is the negative half of the pair -- the two together
          * prove the floor holds for both sign values, not just for zero.
@@ -1625,7 +1614,7 @@ static int test_get_null_and_empty(void)
     {
         /*
          * The unsigned type reaches the same floor by a different route:
-         * paramsign() short-circuits to POSITIVE at num.c:25-26 without
+         * paramsign() short-circuits to POSITIVE at num.c:28-29 without
          * reading anything, and 0x00 is the positive pad byte, so the loop
          * is again asked to strip the only byte there is.
          */
@@ -1674,8 +1663,8 @@ static int test_get_null_and_empty(void)
          * The negative twin of the case above, and also the one input in
          * this group that would otherwise answer PROVNUM_E_UNSUPPORTED: a
          * negative source into the unsigned instantiation normally fails
-         * the sign clause at num.c:114.  It does not get that far, because
-         * the null-destination guard at num.c:105-108 comes first.  So this
+         * the sign clause at num.c:120.  It does not get that far, because
+         * the null-destination guard at num.c:111-114 comes first.  So this
          * fixture pins a precedence fact as well as the loop floor.
          */
         unsigned char src[sizeof(size_t)];
@@ -1701,7 +1690,7 @@ static int test_get_null_and_empty(void)
          * One byte WIDER than the destination, and entirely pad: with a
          * null destination the floor is one byte rather than
          * sizeof(size_t), so the loop strips past the destination width and
-         * the oversize test at num.c:98 never fires.  PROVNUM_E_TOOBIG
+         * the oversize test at num.c:104 never fires.  PROVNUM_E_TOOBIG
          * would be the wrong answer here; PROVNUM_E_NULL is the right one.
          */
         unsigned char src[sizeof(size_t) + 1];
@@ -1758,7 +1747,7 @@ static int test_get_null_and_empty(void)
  * group covers the rest of the strip loop's behaviour: a source whose extra
  * byte is plainly significant, a source whose extra bytes are all padding and
  * need SEVERAL iterations to remove, and the same rejection through the other
- * instantiation.  Between them they pin the loop's bound at num.c:92 from
+ * instantiation.  Between them they pin the loop's bound at num.c:98 from
  * both sides -- it must run often enough to strip four bytes and stop exactly
  * at the destination's width.
  */
@@ -1771,7 +1760,7 @@ static int test_get_oversize(void)
          * One byte too wide, every bit set, declared unsigned: rule (a) fails
          * at once because 0xFF is not the positive pad byte, so the loop
          * breaks on its first iteration and the source is still too wide.
-         * PROVNUM_E_TOOBIG, from num.c:98-101.
+         * PROVNUM_E_TOOBIG, from num.c:104-107.
          */
         unsigned char src[sizeof(size_t) + 1];
         OSSL_PARAM param;
@@ -1856,8 +1845,8 @@ static int test_get_oversize(void)
 }
 
 /*
- * PROVNUM_E_UNSUPPORTED, and the proof of where it cannot happen.  num.c:134
- * is the fallthrough taken when the simple-case condition at num.c:111-114
+ * PROVNUM_E_UNSUPPORTED, and the proof of where it cannot happen.  num.c:145
+ * is the fallthrough taken when the simple-case condition at num.c:117-120
  * does not hold, and reaching it through the public API is narrower than it
  * looks.
  *
@@ -1866,25 +1855,25 @@ static int test_get_oversize(void)
  *
  *     (dest.data_type == OSSL_PARAM_INTEGER || src.sign == POSITIVE)
  *
- * and for provnum_get_int() the destination descriptor built at num.c:142-144
- * takes its data_type from the macro's DT parameter, which num.c:170
+ * and for provnum_get_int() the destination descriptor built at num.c:153-155
+ * takes its data_type from the macro's DT parameter, which num.c:181
  * instantiates as OSSL_PARAM_INTEGER, so the first disjunct is ALWAYS true.  A
  * test cannot assert an unreachable return, so this group asserts the
  * COMPLEMENTARY fact: the very input that yields PROVNUM_E_UNSUPPORTED from
  * provnum_get_size_t() yields SUCCESS from provnum_get_int().  That makes the
  * exclusion evidence rather than assumption, and it fails if the instantiation
- * at num.c:170 is ever changed.
+ * at num.c:181 is ever changed.
  *
- * PROOF 2 -- provnum_get_size_t() is the only reachable site.  num.c:169
+ * PROOF 2 -- provnum_get_size_t() is the only reachable site.  num.c:180
  * instantiates it with OSSL_PARAM_UNSIGNED_INTEGER, so the first disjunct is
  * always false and the clause turns entirely on src.sign.  A source declared
  * OSSL_PARAM_INTEGER whose most significant bit is set makes paramsign()
- * answer NEGATIVE at num.c:27-28, and the fallthrough is taken.
+ * answer NEGATIVE at num.c:30-31, and the fallthrough is taken.
  *
  * PROOF 3 -- the condition's other three clauses are UNSATISFIABLE through the
  * public API, so no test can cover them and none is attempted.  All four
- * numdesc initialisers -- num.c:142-144 and num.c:145-148 for the getters,
- * num.c:156-159 and num.c:160-162 for the setters -- set `endian` from the
+ * numdesc initialisers -- num.c:153-155 and num.c:156-159 for the getters,
+ * num.c:167-170 and num.c:171-173 for the setters -- set `endian` from the
  * same nativeendian() call, `limbsize` to 1 and `limbnailbits` to 0 for source
  * and destination alike, so dest.endian == src.endian, dest.limbsize == 1 and
  * dest.limbnailbits == 0 hold on every call that can be made.  Only editing
@@ -1892,18 +1881,18 @@ static int test_get_oversize(void)
  * consequence of the code's shape rather than an oversight here.
  *
  * PROOF 4 -- the second half of the strip-loop's floor clause is likewise
- * UNSATISFIABLE from a getter.  num.c:91 reads
+ * UNSATISFIABLE from a getter.  num.c:97 reads
  *
  *     size_t end = dest.data == NULL || dest.size == 0 ? 1 : dest.size;
  *
  * and the `dest.size == 0` disjunct can only change the result when dest.data
  * is non-null AND dest.size is zero.  The getter's destination descriptor at
- * num.c:142-144 takes its size from sizeof(T), which is never zero, and when
+ * num.c:153-155 takes its size from sizeof(T), which is never zero, and when
  * the destination pointer is null the first disjunct has already decided the
  * value.  Deleting the disjunct therefore leaves every getter answer and
  * destination byte unchanged, which makes it a semantically equivalent edit
  * with respect to THIS file rather than a coverage gap.  It is the setter's
- * descriptor at num.c:156-159 that takes its size from param->data_size and
+ * descriptor at num.c:167-170 that takes its size from param->data_size and
  * can present zero capacity, so the disjunct is load-bearing there and its
  * reproducer belongs in the setter tests.
  */
@@ -2036,13 +2025,13 @@ static int test_get_unsupported_and_complement(void)
  * THE FULL GUARD CHAIN, in evaluation order, so a reader can see at a glance
  * which pairs are covered and which are impossible to construct:
  *
- *     1  wrong type            num.c:58
- *     2  empty source          num.c:64
- *     3  null source data      num.c:70
- *     4  padding-strip loop    num.c:92-96   (not a guard; feeds 5)
- *     5  oversize              num.c:98
- *     6  null destination      num.c:105
- *     7  unsupported           num.c:134       (fallthrough)
+ *     1  wrong type            num.c:61
+ *     2  empty source          num.c:67
+ *     3  null source data      num.c:73
+ *     4  padding-strip loop    num.c:98-102   (not a guard; feeds 5)
+ *     5  oversize              num.c:104
+ *     6  null destination      num.c:111
+ *     7  unsupported           num.c:145       (fallthrough)
  *
  * MANY CASES CARRY A CONTROL, and it is what separates a precedence assertion
  * from an ordinary error test.  A case is only about ORDER if the losing guard
@@ -2059,7 +2048,7 @@ static int test_get_precedence(void)
 
     {
         /*
-         * WRONG TYPE (num.c:58) versus NULL DATA (num.c:70).  A source that is
+         * WRONG TYPE (num.c:61) versus NULL DATA (num.c:73).  A source that is
          * both an OCTET_STRING and has no buffer.  The type check comes first,
          * so PROVNUM_E_WRONG_TYPE wins -- also the more useful answer, since a
          * caller who passed the wrong kind of parameter has a different bug
@@ -2086,7 +2075,7 @@ static int test_get_precedence(void)
 
     {
         /*
-         * WRONG TYPE (num.c:58) versus NULL DESTINATION (num.c:105).  A real
+         * WRONG TYPE (num.c:61) versus NULL DESTINATION (num.c:111).  A real
          * buffer of the wrong type, and nowhere to put the result.  The type
          * check is first of all the guards, so it wins here too.
          */
@@ -2111,7 +2100,7 @@ static int test_get_precedence(void)
 
     {
         /*
-         * WRONG TYPE (num.c:58) versus EMPTY SOURCE (num.c:64) -- the two
+         * WRONG TYPE (num.c:61) versus EMPTY SOURCE (num.c:67) -- the two
          * ADJACENT guards, and so the pair a reordering is most likely to
          * disturb.  A source that is simultaneously the wrong kind of
          * parameter and declares no bytes: an OCTET_STRING with a real,
@@ -2185,7 +2174,7 @@ static int test_get_precedence(void)
          * implement_provnum().  Worth repeating here, where most mirrors are
          * not, because the losing guard's behaviour is destination-width
          * dependent: the empty-source shortcut memsets dest.size bytes
-         * (num.c:65-66), so a reordering writes sizeof(int) bytes here and
+         * (num.c:68-69), so a reordering writes sizeof(int) bytes here and
          * sizeof(size_t) bytes above.  Asserting both widths is what stops the
          * fix for one instantiation from silently leaving the other wrong.
          */
@@ -2231,15 +2220,15 @@ static int test_get_precedence(void)
 
     {
         /*
-         * WRONG TYPE (num.c:58) versus OVERSIZE (num.c:98).  The type check
+         * WRONG TYPE (num.c:61) versus OVERSIZE (num.c:104).  The type check
          * is the first guard of all and the oversize test is the fifth, with
          * the padding-strip loop in between, so PROVNUM_E_WRONG_TYPE wins over
          * the widest possible span of the guard chain.
          *
          * The source must be NON-STRIPPABLE or the competition evaporates: a
          * source whose extra bytes are padding would be reduced to the
-         * destination's width by the loop at num.c:92-96 and never reach
-         * num.c:98 as oversized at all.  MSB-first
+         * destination's width by the loop at num.c:98-102 and never reach
+         * num.c:104 as oversized at all.  MSB-first
          *
          *     01 00 00 .. 00
          *
@@ -2294,7 +2283,7 @@ static int test_get_precedence(void)
         /*
          * The same competition at provnum_get_int()'s width.  Mirrored because
          * the losing guard is the one guard whose outcome depends on the
-         * destination: num.c:98 compares against dest.size, so "oversized"
+         * destination: num.c:104 compares against dest.size, so "oversized"
          * means five bytes here and nine bytes above, and only a fixture built
          * from sizeof(int) can put the int instantiation's oversize test into
          * competition at all.
@@ -2340,11 +2329,11 @@ static int test_get_precedence(void)
 
     {
         /*
-         * EMPTY SOURCE (num.c:64) versus NULL DESTINATION (num.c:105), and the
+         * EMPTY SOURCE (num.c:67) versus NULL DESTINATION (num.c:111), and the
          * most counter-intuitive answer in the whole contract: SUCCESS.  The
          * empty-source shortcut returns before the destination is ever looked
          * at, and it is careful to skip its memset when there is no
-         * destination (num.c:65), so converting an empty number into nowhere
+         * destination (num.c:68), so converting an empty number into nowhere
          * succeeds.  Compare the one-byte source with a null destination in
          * test_get_null_and_empty(), which is PROVNUM_E_NULL: the destination
          * check has not gone away, this input simply never reaches it.
@@ -2368,7 +2357,7 @@ static int test_get_precedence(void)
 
     {
         /*
-         * EMPTY SOURCE (num.c:64) versus NULL DATA (num.c:70).  Both hold at
+         * EMPTY SOURCE (num.c:67) versus NULL DATA (num.c:73).  Both hold at
          * once -- no buffer AND a declared size of zero -- and the shortcut is
          * evaluated first, so the answer is success with a zeroed destination
          * rather than PROVNUM_E_NULL.  A reader might well expect the null
@@ -2393,23 +2382,23 @@ static int test_get_precedence(void)
 
     {
         /*
-         * NULL DATA (num.c:70) versus OVERSIZE (num.c:98).  A source that
+         * NULL DATA (num.c:73) versus OVERSIZE (num.c:104).  A source that
          * declares more bytes than the destination can hold and has no buffer
          * to read them from.  The null-data guard is third and the oversize
          * test fifth, so PROVNUM_E_NULL wins -- and it has to, because the
          * guard the ordering protects is not a preference but a dereference:
          * the padding-strip loop between them indexes src.data on its first
-         * iteration (num.c:93-94), so a reordering does not answer -2, it
+         * iteration (num.c:99-100), so a reordering does not answer -2, it
          * reads through a null pointer.
          *
          * THE TYPE MUST BE OSSL_PARAM_INTEGER, NEVER THE UNSIGNED TYPE.
-         * paramsign() returns POSITIVE at its type gate (num.c:25-26) for
+         * paramsign() returns POSITIVE at its type gate (num.c:28-29) for
          * OSSL_PARAM_UNSIGNED_INTEGER, without looking at the payload at
-         * num.c:27, so an unsigned fixture never drives
+         * num.c:30, so an unsigned fixture never drives
          * execution into the branch that indexes the buffer and would be blind
          * to the whole null-dereference class.  With the signed type this case
          * also exercises the pre-validation guard at the head of paramsign()
-         * (num.c:19-20), which is the only reason the call returns a code at
+         * (num.c:22-23), which is the only reason the call returns a code at
          * all rather than faulting before provnum_copy() is even entered.
          */
         OSSL_PARAM param;
@@ -2493,18 +2482,18 @@ static int test_get_precedence(void)
 
     {
         /*
-         * OVERSIZE (num.c:98) versus NULL DESTINATION (num.c:105).  The
+         * OVERSIZE (num.c:104) versus NULL DESTINATION (num.c:111).  The
          * oversize test is evaluated first, so PROVNUM_E_TOOBIG wins.
          *
          * The fixture has to be built with care, and the reason is worth
          * recording.  A null destination lowers the strip loop's floor from
-         * dest.size to 1 (num.c:91), so a source whose extra bytes are
+         * dest.size to 1 (num.c:97), so a source whose extra bytes are
          * padding would be stripped all the way down to one byte, pass the
          * oversize test and come back PROVNUM_E_NULL -- which is exactly what
          * the one-byte case in test_get_null_and_empty() shows.  This source
          * therefore has to be genuinely non-strippable: a 0x01 on top fails
          * rule (a) immediately, the loop breaks at full width, and the source
-         * is still wider than the destination when num.c:98 tests it.
+         * is still wider than the destination when num.c:104 tests it.
          */
         unsigned char src[sizeof(size_t) + 1];
         OSSL_PARAM param;
@@ -2528,7 +2517,7 @@ static int test_get_precedence(void)
 
     {
         /*
-         * OVERSIZE (num.c:98) versus the UNSUPPORTED FALLTHROUGH (num.c:134).
+         * OVERSIZE (num.c:104) versus the UNSUPPORTED FALLTHROUGH (num.c:145).
          * A negative signed source, too wide for the unsigned destination:
          * both PROVNUM_E_TOOBIG and PROVNUM_E_UNSUPPORTED are candidate
          * answers and the oversize test, being earlier, wins.
@@ -2547,7 +2536,7 @@ static int test_get_precedence(void)
          * while the byte below it is 0x00, whose high bit does NOT match the
          * pad byte's, so rule (b) fails and the loop breaks on its first
          * iteration.  src.size is then still greater than dest.size at
-         * num.c:98 and the oversize answer is the one that can be observed.
+         * num.c:104 and the oversize answer is the one that can be observed.
          */
         unsigned char src[sizeof(size_t) + 1];
         OSSL_PARAM param;
@@ -2581,7 +2570,7 @@ static int test_get_precedence(void)
  * param_identical(), which compares the whole representation; restating it one
  * member at a time NAMES THE MEMBER that moved, and makes one expectation
  * explicit and greppable: A GETTER MUST NOT WRITE return_size.  Only the
- * provnum_set_ half of implement_provnum() assigns it, at num.c:165, so
+ * provnum_set_ half of implement_provnum() assigns it, at num.c:176, so
  * folding the two halves of the macro together would give the getters that
  * assignment and break a caller's buffer sizing with nothing a compiler could
  * flag.

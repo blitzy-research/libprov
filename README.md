@@ -333,10 +333,10 @@ instead of a target that links and then observes nothing.
 macro from the command line is a compiler-driver convention rather than a
 C99 language feature -- POSIX spells it `-U name` and the standard says
 nothing about it -- so the two targets carry the POSIX spelling, `-UNDEBUG`,
-which both GCC and Clang accept.  Ordering was verified rather than assumed:
-a target's `COMPILE_OPTIONS` follow the per-configuration flags, so a Release
-build compiles those targets with `-O3 -DNDEBUG -UNDEBUG` and the undefine
-has the last word.
+which both GCC and Clang accept.  Ordering is what makes that work: a target's
+`COMPILE_OPTIONS` follow the per-configuration flags, so a Release build
+compiles those targets with `-O3 -DNDEBUG -UNDEBUG` and the undefine has the
+last word.
 
 A driver that rejected `-UNDEBUG`, or a build that lost it, would open a hole,
 and that hole is closed in the sources rather than left to the build system.
@@ -399,15 +399,15 @@ toolchain.  Those are 10 of `num.c`'s 58 branches and 7 of `err.c`'s 26 never
 taken, and every one of the 17 falls into a class that **no test on a single
 host can take**:
 
--   **The big-endian arms** -- `num.c:13`, `:22`, `:76`, `:77`, `:118`,
-    `:124`, `:125`.  All four `numdesc` instantiations set `endian` from
+-   **The big-endian arms** -- `num.c:13`, `:25`, `:79`, `:80`, `:129`,
+    `:135`, `:136`.  All four `numdesc` instantiations set `endian` from
     `nativeendian()`, so `endian == BIG` holds only on a big-endian host and
     the arm is dead on a little-endian one (and vice versa).  This is a
     property of the *host*, not of the suite: the fixtures compute every
     byte-level expectation from the host's own order, so the same assertions
     exercise the other arm, and would catch a defect in it, when run on a
     big-endian machine.
--   **The descriptor-mismatch arms** -- `num.c:111`, `:112`, `:113`.  The
+-   **The descriptor-mismatch arms** -- `num.c:117`, `:118`, `:119`.  The
     same instantiations hardcode `limbsize` to 1 and `limbnailbits` to 0 on
     both sides, so the mismatch fallthrough is unsatisfiable through the
     public API; reaching it would need a change to `num.c`.
@@ -451,10 +451,10 @@ stating precisely, because it is narrower than it once was:
     `num.c` an address in memory no mapping covers, so a read that must not
     happen ends the test on a signal rather than quietly returning a
     neighbouring byte.  Removing either half of the pre-validation guard at
-    `num.c:19-20` -- or the guard entirely -- ends `test_num_get` on
+    `num.c:22-23` -- or the guard entirely -- ends `test_num_get` on
     `SIGSEGV` under the command above with no instrumentation at all; all
     three variants were built and run to confirm it.  What this tree adds is
-    the diagnosis: the same removals name `paramsign` at `num.c:27`, and the
+    the diagnosis: the same removals name `paramsign` at `num.c:30`, and the
     caller above it, instead of reporting only a signal number.
 -   **`num.c`'s zero-capacity clamp** is caught by the default suite too, and
     what catches it is specific: reverting the clamp makes `provnum_set_*`
@@ -468,7 +468,7 @@ stating precisely, because it is narrower than it once was:
     detection rests on a byte inside the library function's own stack frame
     that no fixture can control.  Here it is unconditional:
     AddressSanitizer's per-variable stack redzones report the revert as a
-    `stack-buffer-underflow` at `num.c:94 in provnum_copy` whatever that byte
+    `stack-buffer-underflow` at `num.c:100 in provnum_copy` whatever that byte
     would have said.
 -   **Whether `proverr_free_handle()` releases anything at all** is *not*
     caught by the default suite, and this tree is where it is caught.  Only

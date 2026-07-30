@@ -15,7 +15,10 @@ static endian_t nativeendian(void)
 
 static sign_t paramsign(const OSSL_PARAM *param)
 {
-    /* Runs pre-validation: {NULL,INTEGER,4} SEGVd, {buf,INTEGER,0} read -1. */
+    /*
+     * Runs before provnum_copy() validates: {NULL,INTEGER,4} SEGVd where
+     * PROVNUM_E_NULL is owed, {buf,INTEGER,0} read buf[-1] where 1 is owed.
+     */
     if (param->data == NULL || param->data_size == 0)
         return POSITIVE;
 
@@ -87,7 +90,10 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
      * 2. The most significant bit of the next to most significant byte
      *    equals the most significant bit of srcsigned.
      */
-    /* dest.size == 0 let provnum_set_size_t(&p, 0) read src[-1]; -2 stands. */
+    /*
+     * Unclamped, provnum_set_size_t(&p, 0) into a zero-capacity destination
+     * read src[-1]; PROVNUM_E_TOOBIG with return_size == 0 is unchanged.
+     */
     size_t end = dest.data == NULL || dest.size == 0 ? 1 : dest.size;
     for (; src.size > end; srcmsb += srcmsb2lsb, src.size--)
         if (((unsigned char *)src.data)[srcmsb] != src.sign
@@ -114,7 +120,12 @@ static struct resultdesc provnum_copy(struct numdesc dest, struct numdesc src)
         && (dest.data_type == OSSL_PARAM_INTEGER || src.sign == POSITIVE)) {
 
         if (src.size < dest.size) {
-            /* 12-byte set_int(&p,5) OOB; 9-byte all-0xFF get_int: -16776961 */
+            /*
+             * LITTLE padding starts at src.size, where the copy below ends.
+             * dest.size - src.size wrote 8 bytes past a 12-byte
+             * provnum_set_int(&p, 5) destination, and made a 9-byte all-0xFF
+             * provnum_get_int() answer -16776961 instead of -1.
+             */
             size_t padstart = dest.endian == BIG ? 0 : src.size;
 
             memset((unsigned char *)dest.data + padstart, src.sign,

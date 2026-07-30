@@ -14,128 +14,97 @@
  * injection both are invisible to a test suite -- and an out-of-memory path
  * that is never exercised is precisely where a missing NULL check becomes a
  * NULL dereference in production.  This file makes both branches reachable and
- * pins what they return.  It repairs nothing: no defect was found in err.c,
- * and modifying a non-test source without a genuine defect is forbidden.
+ * pins what they return.
  *
- * ONLY malloc IS WRAPPED.  The single link option this target carries is
- * "-Wl,--wrap=malloc", and malloc is the only allocator entry point err.c
- * calls: err.c:56 in proverr_new_handle() and err.c:71 in proverr_dup_handle().
- * calloc and realloc err.c never calls, so wrapping either would interpose on
- * nothing.  free is not wrapped either, for two reasons: a release cannot be
- * made to FAIL, so wrapping it would inject no fault and serve no part of this
- * file's purpose; and the frozen specification fixes this target's link option
- * at --wrap=malloc and its case list at A-1 through A-8.  Both are honoured
- * literally.  What that leaves unobserved is stated plainly under WHAT THIS
- * FILE CANNOT SEE below rather than papered over.
- *
- * HOW THIS TARGET IS BUILT.  The test registration links the libprov LIBRARY
- * and adds the one link option above; it does NOT compile a private copy of
- * err.c.  That works because --wrap operates at LINK time on undefined
+ * HOW THIS TARGET IS BUILT.  The registration links the libprov LIBRARY and
+ * adds one link option, "-Wl,--wrap=malloc"; it does NOT compile a private copy
+ * of err.c.  That works because --wrap operates at LINK time on undefined
  * references: err.c.o inside libprov.a refers to `malloc`, so the linker
  * rewrites that reference -- err.c:56 and err.c:71 included -- to the wrapper
- * below without err.c being recompiled or even aware.  --wrap is a GNU-ld
- * extension, so tests/CMakeLists.txt registers this target only where the
- * toolchain carries it: a GNU or Clang driver on a UNIX host that is not Apple.
- * Elsewhere the target is NOT REGISTERED, rather than registered and skipped or
- * registered and allowed to fail, so configuration still succeeds and every
- * other target runs normally.
+ * below without err.c being recompiled or even aware.  Why malloc is the only
+ * allocator entry point worth wrapping is set out above the wrapper
+ * declarations further down.  --wrap is a GNU-ld extension, so
+ * tests/CMakeLists.txt registers this target only where the toolchain carries
+ * it: a GNU or Clang driver on a UNIX host that is not Apple.  Elsewhere the
+ * target is NOT REGISTERED, rather than registered and skipped or registered
+ * and allowed to fail, so configuration still succeeds and every other target
+ * runs normally.
  *
- * THE LINK OPTION CANNOT GO MISSING UNNOTICED, which matters because every
- * assertion here would turn vacuous if it did -- an unwrapped malloc never
- * fails on a machine with memory to spare, so each "returns NULL" would simply
- * stop being true and each "succeeds" would pass for no reason.  It cannot
- * happen: __real_malloc is a name only the linker's --wrap creates and this
- * file references it, so a build without the option fails to LINK with an
- * undefined reference rather than producing a binary that quietly proves
+ * THE LINK OPTION CANNOT GO MISSING UNNOTICED.  Every assertion here would turn
+ * vacuous if it did: an unwrapped malloc never fails on a machine with memory to
+ * spare, so each "returns NULL" would stop being true and each "succeeds" would
+ * pass for no reason.  __real_malloc is a name only the linker's --wrap creates
+ * and this file references it, so a build without the option fails to LINK with
+ * an undefined reference instead of producing a binary that quietly proves
  * nothing.  That is also the backstop behind the declarative registration gate:
- * a driver repointed at a linker without --wrap fails loudly at the link, naming
- * the missing capability, instead of silently dropping a test.
+ * a driver repointed at a linker without --wrap fails loudly at the link.
  *
- * NO ABORTING INPUT LIVES HERE.  This target must be built with the project's
- * DEFAULT flags, which leaves the five assert() calls in err.c live: err.c:26
- * and err.c:27 abort on a NULL core or a NULL dispatch table, and err.c:47 to
- * err.c:49 abort on any table that fails to supply all three callbacks.  Every
- * call below therefore passes &mock_core_primary together with
- * mock_dispatch_complete -- the one table that resolves all three -- and no
- * other table is touched.  Aborting inputs, and the graceful NULL returns
- * their #ifdef NDEBUG counterparts at err.c:51-54 produce, belong to
- * test_err_death.c and test_err_guards.c; duplicating them here would abort
- * this process and take the rest of the cases with it.
+ * NO ABORTING INPUT LIVES HERE.  This target is built with the project's DEFAULT
+ * flags, which leaves err.c's five assert() calls live: err.c:26 and err.c:27
+ * abort on a NULL core or a NULL dispatch table, and err.c:47 to err.c:49 on any
+ * table that fails to supply all three callbacks.  Every call below therefore
+ * passes &mock_core_primary together with mock_dispatch_complete, the one table
+ * that resolves all three, and no other table is touched.  The aborting inputs
+ * belong to test_err_death.c and the graceful NULL returns of err.c:51-54 to
+ * test_err_guards.c; an abort raised here would take the remaining cases with
+ * it.
  *
  * THE COUNTDOWN INTERPOSER.  __wrap_malloc() fails the next N allocations and
  * then delegates to __real_malloc(), the original the linker supplies.  A
- * countdown rather than a boolean because a case has to be able to say "fail
- * exactly the next one" and then observe that the next-but-one succeeded,
- * which is what separates a real out-of-memory return from an interposer that
- * got stuck.  The countdown, every counter and every helper have internal
- * linkage and stay in THIS translation unit: allocator interposition perturbs a
- * whole process, so promoting any of it into tests/testutil.h or
- * tests/mock_core.h would silently change how every sibling target allocates.
- * Confining it to one executable is what keeps the suite safe under
- * `ctest -j N`.
+ * countdown rather than a boolean, because a case has to be able to say "fail
+ * exactly the next one" and then observe that the next-but-one succeeded, which
+ * is what separates a real out-of-memory return from an interposer that got
+ * stuck.  The countdown, every counter and every helper have internal linkage
+ * and stay in THIS translation unit: allocator interposition perturbs a whole
+ * process, so promoting any of it into tests/testutil.h or tests/mock_core.h
+ * would silently change how every sibling target allocates, and confining it to
+ * one executable is what keeps the suite safe under `ctest -j N`.
  *
  * <stdlib.h> IS MANDATORY, not stylistic.  With an interposer in the picture,
  * an implicit declaration of malloc collides with the compiler's built-in and
  * is diagnosed as an incompatible declaration rather than merely warned about.
  *
- * ARM LATE, DISARM EARLY.  Anything else in the process that allocates would
- * consume the countdown and make the outcome depend on timing rather than on
- * err.c.  stdio is the realistic offender, because it buffers on first use, so
- * main() prints and flushes once BEFORE any case runs to reduce that
- * interference.  The determinism itself comes from the WINDOW, not from the
- * warm-up: every case arms IMMEDIATELY before the call under test and disarms
- * IMMEDIATELY after, storing the values to be asserted first and printing
- * nothing at all in between -- which is also why the assertions, all of which
- * print, are written after the disarm rather than around the call.  Whether a
- * C library's own internal allocations reach __wrap_malloc is a property of
- * that library and not a guarantee (--wrap rewrites references only in the
- * objects being linked, not calls made inside libc), so the discipline is kept
- * regardless and every exact-count assertion is confined to the armed window,
- * which contains one library call and nothing else.
- *
- * THE SAME FLUSHES EARN THEIR KEEP TWICE OVER.  This file exists to drive
- * err.c into failure modes, so a fault somewhere in the run is a realistic
- * outcome -- and stdout redirected to a file or a pipe, which is how CTest
- * runs it, is FULLY buffered, so a fault would discard everything stdio had
- * not yet written and take the diagnosis with it.  Every point where this file
- * is about to hand a handle back to the library -- each armed window, and each
- * raise -- is therefore preceded by a flush, and each case flushes again when
- * it ends, which bounds evidence loss to the case that faulted.
+ * ARM LATE, DISARM EARLY, AND FLUSH BEFORE EACH WINDOW.  Anything else in the
+ * process that allocates would consume the countdown, so every case arms
+ * IMMEDIATELY before the call under test, disarms IMMEDIATELY after, stores the
+ * values to be asserted, and only then prints -- which is why the assertions all
+ * sit after the disarm rather than around the call.  Whether a C library's own
+ * internal allocations reach __wrap_malloc is a property of that library and not
+ * a guarantee (--wrap rewrites references only in the objects being linked, not
+ * calls made inside libc), so every exact-count assertion stays inside a window
+ * holding one library call and nothing else.  stdout is FULLY buffered when
+ * CTest redirects it, so each window is preceded by a flush and each case
+ * flushes again at its end, which bounds what a fault can destroy to the case
+ * that faulted.
  *
  * THE HANDLE IS OPAQUE.  struct proverr_functions_st is defined only at
- * err.c:7-12; include/prov/err.h:58 merely forward-declares it, so no member
- * can be read from here and no assertion may try.  "The source handle survived
- * a failed duplication" is therefore proved BEHAVIOURALLY: a raise through it
- * must still reach all three recording stubs, in order, carrying the very core
- * pointer the handle was built with.  Pointer identity, not value equality, is
- * the right claim there, because err.c:57 stores the pointer and err.c:87,
- * err.c:93 and err.c:102 forward it unchanged.
+ * err.c:7-12 and include/prov/err.h:58 merely forward-declares it, so no member
+ * can be read from here.  "The source handle survived a failed duplication" is
+ * therefore proved BEHAVIOURALLY: a raise through it must still reach all three
+ * recording stubs, in order, carrying the very core pointer the handle was built
+ * with -- pointer identity, not value equality, because err.c:57 stores the
+ * pointer and err.c:87, err.c:93 and err.c:102 forward it unchanged.
  *
- * NOTHING HERE IS A SMOKE TEST.  Every case asserts a specific value: exactly
- * NULL, exactly non-NULL, distinctness of two pointers, exact invocation
- * counts, the exact recorded call order, and the exact number of allocations
- * the interposer saw.  The process exit status is derived from the assertion
- * counters in tests/testutil.h, so reaching the end of main() cannot
- * manufacture a pass.  Failure paths carry positive assertions too: on every
- * forced failure the negative side-effect invariant -- that not one callback
- * ran -- is asserted rather than assumed.
+ * FAILURE PATHS CARRY POSITIVE ASSERTIONS TOO.  On every forced failure the
+ * negative side-effect invariant -- that not one callback ran -- is asserted
+ * rather than assumed, alongside the exact return value, the exact invocation
+ * counts and the exact number of allocations the interposer saw.
  *
  * NO LIBCRYPTO AND NO RUNNING PROVIDER.  The core handle, the stubs and the
- * dispatch table all come from tests/mock_core.h, which builds them by hand,
- * and no libcrypto entry point is ever called.  The accessors err.c uses to
- * unpack a dispatch entry expand to static inline definitions, so nothing has
- * to be linked for them either.  <openssl/params.h> is not included by this
- * file, although prov/err.h reaches it transitively via
- * <openssl/core_dispatch.h> and <openssl/indicator.h>; that is the project
- * header's own include graph, it only declares the OSSL_PARAM_ families, and a
- * declaration links nothing.
+ * dispatch table come from tests/mock_core.h, which builds them by hand, and no
+ * libcrypto entry point is ever called; the accessors err.c uses to unpack a
+ * dispatch entry expand to static inline definitions, so nothing has to be
+ * linked for them either.  prov/err.h reaches <openssl/params.h> transitively
+ * through <openssl/core_dispatch.h> and <openssl/indicator.h>, but that only
+ * declares the OSSL_PARAM_ families, a declaration links nothing, and none of
+ * them is ever called.
  *
- * ON SANITIZERS.  AddressSanitizer supplies its own malloc, so the interaction
- * with --wrap has to be verified rather than assumed on any given toolchain:
- * the linker must still rewrite err.c's references to __wrap_malloc and
- * __real_malloc must still resolve to the sanitizer-provided allocator.  Where
- * that does not hold, the non-sanitized run is the authoritative one and no
- * assertion here may be weakened to make a sanitized build pass.
+ * ON SANITIZERS.  AddressSanitizer supplies its own malloc, so a sanitized build
+ * reproduces these results only where the linker still rewrites err.c's
+ * references to __wrap_malloc and __real_malloc still resolves to the
+ * sanitizer's allocator.  Where it does not, the non-sanitized run is the
+ * authoritative one and no assertion here may be weakened to make a sanitized
+ * build pass.
  */
 
 #include "testutil.h"
@@ -158,38 +127,33 @@
  *
  * WHY ONLY malloc IS WRAPPED.  err.c reaches the allocator at three places:
  * malloc at err.c:56 and err.c:71, and free at err.c:82.  calloc and realloc it
- * never calls, so wrapping either would interpose on nothing and would be scope
- * creep.  malloc is wrapped because a FAILURE can be injected there and an
- * out-of-memory return is otherwise unreachable from any input.  free is not,
- * because a release cannot be made to fail: an interposer on it would inject
- * nothing and would belong to a different mechanism serving a different purpose
- * from this file's.  The frozen specification fixes this target's link option at
- * -Wl,--wrap=malloc and this file's case list at A-1 through A-8, and both are
- * honoured literally.  A second --wrap option must not be added here: the case
- * list would then no longer match the wiring, and widening a frozen
- * specification is not a decision that belongs in a test file.
+ * never calls, so wrapping either would interpose on nothing.  malloc is wrapped
+ * because a FAILURE can be injected there and the out-of-memory return is
+ * otherwise unreachable from any input.  free is not, because a release cannot
+ * be made to fail: an interposer on it would inject no fault, and observing a
+ * release is a different mechanism answering a different question from the one
+ * this file asks.  One --wrap option is therefore all this target carries, and
+ * the eight cases below are written to it.
  *
  * WHAT THIS FILE CANNOT SEE, STATED RATHER THAN HIDDEN.  err.c:82 is the whole
  * body of proverr_free_handle(), and that function returns nothing, writes
  * through nothing and calls no callback.  Its effect is therefore invisible from
  * any test translation unit in this suite, and a body reduced to a no-op would
  * satisfy every assertion in every target.  That is an honest gap in the suite's
- * mutation coverage and it is recorded here so a reader finds it stated instead
- * of having to deduce it from an absence.  The opt-in
- * -fsanitize=address,undefined configuration documented in README.md is the
- * channel that closes it: LeakSanitizer reports the handle this file allocated
- * and never got back, with the allocation site's stack trace.  Every case below
- * frees every handle it obtains, so that configuration has a clean baseline to
- * judge against.
+ * mutation coverage, stated here so a reader finds it rather than having to
+ * deduce it from an absence.  The opt-in -fsanitize=address,undefined
+ * configuration documented in README.md is the channel that closes it:
+ * LeakSanitizer reports the handle this file allocated and never got back, with
+ * the allocation site's stack trace.  Every case below frees every handle it
+ * obtains, so that configuration has a clean baseline to judge against.
  *
  * WHAT THE CASES DO ESTABLISH ABOUT RELEASE.  Case A-5 requires the duplicate to
- * be a distinct object from its source, and case A-7 requires the source to keep
- * answering correctly after the duplicate has been freed.  Together they rule
- * out a proverr_free_handle() that released the SOURCE when it was handed the
- * copy, and any release that left the source unusable -- both behaviourally,
- * through a subsequent raise, without needing to observe the allocator.  What
- * they cannot see is a release that does nothing at all, which is the gap named
- * above.
+ * be a distinct object from its source and case A-7 requires the source to keep
+ * answering correctly after the duplicate has been freed, which together rule
+ * out a proverr_free_handle() that released the SOURCE when handed the copy,
+ * and any release that left the source unusable -- behaviourally, through a
+ * later raise, without observing the allocator.  A release that does nothing at
+ * all remains the gap named above.
  */
 void *__real_malloc(size_t size);
 void *__wrap_malloc(size_t size);
@@ -1026,17 +990,17 @@ int main(void)
   cases &= test_countdown_precision();
 
   /*
-   * The engagement diagnostic.  Deliberately a "greater than zero" and never a
-   * primary assertion: an exact total would be brittle, since it would depend
-   * on which allocations a given C library happens to route through the
-   * rewritten references.  The per-case delta assertions are where precision
-   * lives.  What this one adds is a single unmistakable line in the log when
-   * the interposer was never entered at all -- a linker that quietly ignored
-   * --wrap, say -- so that failure is diagnosed rather than merely observed as
-   * a pile of unexpected non-NULL returns.  The totals are printed first
-   * because TEST_ASSERT() can only echo the source text of its expression, and
-   * whoever is reading this log after a link-configuration accident wants the
-   * numbers themselves.
+   * The was-the-interposer-entered diagnostic.  Deliberately a "greater than
+   * zero" comparison and never a primary assertion: an exact total would be
+   * brittle, since it would depend on which allocations a given C library
+   * happens to route through the rewritten references.  The per-case delta
+   * assertions are where precision lives.  What this one adds is a single
+   * unmistakable line in the log when the interposer was never entered at all
+   * -- a linker that quietly ignored --wrap, say -- so that failure is
+   * diagnosed rather than merely observed as a pile of unexpected non-NULL
+   * returns.  The totals are printed first because TEST_ASSERT() can only echo
+   * the source text of its expression, and whoever is reading this log after a
+   * link-configuration accident wants the numbers themselves.
    */
   printf("interposer totals: %lu allocations intercepted, %lu forced to fail,"
          " %lu blocks supplied\n", alloc_intercepted, alloc_forced,
