@@ -974,7 +974,11 @@ static int test_get_boundaries(void)
  * "srcsigned", and no identifier of that name exists anywhere in the file.
  * What the loop actually compares is src.sign, the struct numdesc member
  * declared at num.c:42 -- rule (a) is the test at num.c:99 and rule (b) the
- * test at num.c:100-101.
+ * test at num.c:100-101.  The stale name is recorded here rather than
+ * corrected there because num.c's diff is deliberately confined to the three
+ * sanctioned repairs -- the same reason include/prov/num.h's silence on the
+ * success value is recorded in this file's header instead of being fixed in
+ * the header itself.
  *
  * Neither rule is written to care whether the source's declared type is
  * signed, and the pair of fixtures below proves that it does not: two

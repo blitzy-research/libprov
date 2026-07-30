@@ -126,6 +126,17 @@ suite itself changes.
     CTest.  Each test is a standalone executable whose exit status comes
     from its own assertion counters, so every one of them is just as usable
     on its own.
+-   `cmake -B build -DCMAKE_C_FLAGS="-DTESTUTIL_COLOUR=0"` configures a
+    suite that prints no ANSI escapes at all.  The pass and fail tags are
+    colourised by default, following the maintainer's own test programs, and
+    the choice is compile-time rather than an `isatty()` check, so where
+    stdout goes never changes what a test prints: a terminal, a pipe, a file
+    and a CTest log all get the same escapes, or all get none.  Set the
+    macro to `0` for a log that is going to be archived or diffed as bytes.
+    It is an ordinary compiler define, so it can share `CMAKE_C_FLAGS` with
+    the coverage and sanitizer recipes below.  Nothing else changes: every
+    test still runs and still passes, and the `--output-junit` XML above
+    carries no escape either way.
 
 ### The `LIBPROV_TESTS` option
 
@@ -149,6 +160,22 @@ To opt out in a top-level build:
 ``` bash
 cmake -B build -DLIBPROV_TESTS=OFF
 ```
+
+Two things about that flag are worth knowing, and neither is specific to this
+project.  Its value follows CMake's ordinary truth rules, as every `option()`
+does, and those rules are a short closed list rather than a general reading of
+the word: `OFF`, `NO`, `FALSE`, `N`, `IGNORE`, `NOTFOUND`, an empty value, `0`
+and any value ending in `-NOTFOUND` turn the tests off, case insensitively.
+Every other value turns them **on** -- including one that was meant to be
+something else, and including several that read as false but are not: `0.0`,
+`00` and `-1` each enable the suite.  And test registration happens at
+configure time, so switching the option in a directory that was already
+configured the other way leaves the `CTestTestfile.cmake` from that earlier
+configuration behind, and `ctest` goes on listing and running what it
+registered there -- all eight, reported passing, because the executables the
+earlier configuration built are still on disk and the stale file still names
+them.  Configure the new value in a fresh `-B` directory, or delete the old one
+first, and the option does exactly what it says.
 
 `BUILD_TESTING`, the option that `include(CTest)` itself brings, has a say
 over registration.  `include(CTest)` calls `enable_testing()` only when
@@ -497,6 +524,27 @@ build and for anyone who configures in the source tree, and `*.gcno`,
 was run from.  The mandated command therefore leaves `git status` showing
 only what you actually edited.
 
+An in-source configure -- `cmake -S . -B .` -- is covered only in part, and
+that is a judgement rather than an omission.  `CMakeCache.txt`, `CMakeFiles/`
+and `Testing/` are ignored wherever they land, but the generator's own output
+is not: such a configure also writes `Makefile`, `cmake_install.cmake`,
+`CTestTestfile.cmake` and `DartConfiguration.tcl` at the source root and a
+`Makefile`, a `cmake_install.cmake` and a `CTestTestfile.cmake` under
+`tests/`, and `git status` lists all seven.  Patterns wide enough to hide them
+would also hide a `Makefile` or a `.cmake` file someone meant to commit, which
+is the same trade the optional build trees below are refused.  Configure out
+of source, as the command above does, and none of it arises.
+
+`Testing/` earns its entry twice over, because it is not only a source-tree
+artifact: a `Testing/` directory appears inside whichever tree is in use, and
+two different steps put it there.  `include(CTest)` creates it at configure
+time, empty but for a `Temporary/` subdirectory, and `ctest --test-dir` then
+writes `LastTest.log` and `CTestCostData.txt` into it; where `LIBPROV_TESTS`
+was turned off so that `include(CTest)` never ran, `ctest --test-dir` creates
+the directory itself.  The pattern is a bare directory name with no leading or
+embedded slash, so it matches at any depth -- inside `build/`, inside the
+optional trees named below, and at the source root alike.
+
 The optional recipes above name their own build trees, and those are **not**
 ignored, deliberately: an ignore pattern broad enough to cover an arbitrary
 `build-<something>/` would also hide a mistakenly committed directory.
@@ -571,10 +619,13 @@ suite.
     links OpenSSL.  Consumption really is headers-only: `libprov`
     references no libcrypto symbol at all, and in the default,
     non-sanitized build a linked test binary's only dynamic dependencies are
-    the vDSO, the C library and the loader.  The opt-in sanitizer
-    configuration above is the one exception, and what it adds is the
-    sanitizer runtimes and what they in turn pull in -- still no OpenSSL
-    library.
+    the vDSO, the C library and the loader.  The coverage recipe above does
+    not change that either, since what it links is static.  The opt-in
+    sanitizer configuration above is the one thing that does, and what it
+    adds is the sanitizer runtimes and what they in turn pull in.  No target
+    carries a sanitizer flag of its own, so nothing is instrumented unless
+    that configuration asks for it.  What none of this adds is an OpenSSL
+    library: no binary built by any configuration on this page links one.
 -   Nothing else.  There are no environment variables to set, no service or
     database to start, no network access and no fixture files on disk;
     every test input is constructed in memory, which is what makes the
